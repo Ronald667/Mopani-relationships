@@ -1,18 +1,6 @@
-export interface Profile {
-  id: string
-  full_name: string
-  age: number
-  gender: string
-  municipality: string
-  village: string
-  language: string
-  intention: string
-  bio: string
-  whatsapp: string
-  photo_url: string
-  is_verified?: boolean
-  is_approved?: boolean
-}
+import type { Profile } from './profileStorage'
+
+export type { Profile }
 
 export interface MatchResult {
   profile: Profile

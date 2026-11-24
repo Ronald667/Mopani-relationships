@@ -1,34 +1,30 @@
 import React, { useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { BackButton } from '@/components/BackButton'
+import { normalizePhone, removeProfilesByWhatsapp } from '@/utils/profileStorage'
 import { Trash2, CheckCircle2 } from 'lucide-react'
 
 export function DeleteData({ onBack }: { onBack: () => void }) {
   const [whatsapp, setWhatsapp] = useState('')
   const [loading, setLoading] = useState(false)
   const [deleted, setDeleted] = useState(false)
+  const [errorMsg, setErrorMsg] = useState('')
 
   const handleDelete = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!whatsapp.trim()) return
-
-    if (!confirm('Are you sure you want to delete your profile and all associated data under POPIA right to erasure?')) {
-      return
-    }
+    setErrorMsg('')
 
     setLoading(true)
     try {
-      let cleanNum = whatsapp.replace(/\D/g, '')
+      const cleanNum = normalizePhone(whatsapp)
       await supabase.from('profiles').delete().eq('whatsapp', cleanNum)
+      await supabase.from('profiles').delete().eq('whatsapp', whatsapp.trim())
 
-      const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
-      const filtered = localProfiles.filter((p: any) => p.whatsapp !== cleanNum && p.whatsapp !== whatsapp)
-      localStorage.setItem('mopani_local_profiles', JSON.stringify(filtered))
-      localStorage.removeItem('mopani_my_profile')
-
+      removeProfilesByWhatsapp(whatsapp)
       setDeleted(true)
     } catch (err: any) {
-      alert('Error deleting data: ' + err.message)
+      setErrorMsg('Error deleting data: ' + (err?.message || 'Unable to process deletion'))
     } finally {
       setLoading(false)
     }
@@ -44,7 +40,7 @@ export function DeleteData({ onBack }: { onBack: () => void }) {
         </div>
         <h1 className="text-2xl sm:text-3xl font-black text-gray-900">Delete My Data (POPIA Right)</h1>
         <p className="text-xs sm:text-sm text-gray-600 leading-relaxed">
-          Under the Protection of Personal Information Act (POPIA), you have the absolute right to request the permanent deletion of your profile and personal data from Mopani Singles.
+          Under the Protection of Personal Information Act (POPIA), you have the absolute right to request the permanent deletion of your profile and personal data from Mopani Singles-v2.
         </p>
 
         {deleted ? (
@@ -52,11 +48,16 @@ export function DeleteData({ onBack }: { onBack: () => void }) {
             <CheckCircle2 className="w-10 h-10 text-rose-600 mx-auto" />
             <h3 className="font-bold text-gray-900">Deletion Request Processed</h3>
             <p className="text-xs text-gray-600">
-              Your profile associated with this WhatsApp number has been successfully removed from our active database and directory.
+              Any profile associated with this WhatsApp number has been removed from our active database and directory.
             </p>
           </div>
         ) : (
           <form onSubmit={handleDelete} className="space-y-4 pt-2">
+            {errorMsg && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-xs font-semibold px-3 py-2 rounded-xl">
+                {errorMsg}
+              </div>
+            )}
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1 text-left">Enter your registered WhatsApp number *</label>
               <input
@@ -71,7 +72,7 @@ export function DeleteData({ onBack }: { onBack: () => void }) {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3.5 rounded-2xl shadow-md transition flex items-center justify-center gap-2 text-sm"
+              className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3.5 rounded-2xl shadow-md transition flex items-center justify-center gap-2 text-sm disabled:opacity-60"
             >
               <Trash2 className="w-4 h-4" /> {loading ? 'Processing Deletion...' : 'Permanently Delete My Profile'}
             </button>

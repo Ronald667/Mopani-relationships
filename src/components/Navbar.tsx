@@ -1,5 +1,5 @@
 import { Logo } from './Logo'
-import { Users, UserPlus, ShieldAlert, Lock, Trash2, ShieldCheck, Sparkles, MessageCircle, User } from 'lucide-react'
+import { Users, UserPlus, ShieldAlert, Trash2, ShieldCheck, Sparkles, MessageCircle, User } from 'lucide-react'
 
 interface NavbarProps {
   activeTab: string
@@ -68,7 +68,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
                   : 'text-gray-600 hover:bg-rose-50 hover:text-rose-700'
               }`}
             >
-              <User className="w-4 h-4" /> My Profile
+              <User className="w-4 h-4" /> My Profiles
             </button>
 
             <button
@@ -79,7 +79,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
                   : 'text-gray-600 hover:bg-rose-50 hover:text-rose-700'
               }`}
             >
-              <UserPlus className="w-4 h-4" /> Register
+              <UserPlus className="w-4 h-4" /> Create Profile
             </button>
 
             <button
@@ -122,7 +122,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
               onClick={() => setActiveTab('myprofile')}
               className="bg-rose-700 text-white text-xs font-bold px-3 py-2 rounded-xl shadow-xs"
             >
-              My Profile
+              My Profiles
             </button>
             <button
               onClick={() => setActiveTab('matches')}
@@ -171,7 +171,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
               activeTab === 'myprofile' ? 'bg-rose-700 text-white' : 'bg-gray-100 text-gray-700'
             }`}
           >
-            My Profile
+            My Profiles
           </button>
           <button
             onClick={() => setActiveTab('register')}

@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { BackButton } from '@/components/BackButton'
+import { ProfileAvatar } from '@/components/ProfileAvatar'
+import {
+  getLocalProfiles,
+  updateProfileModerationStatus,
+} from '@/utils/profileStorage'
 import { ShieldCheck, Check, Ban, AlertTriangle, Users, Lock } from 'lucide-react'
 
 export function Admin({ onBack }: { onBack: () => void }) {
@@ -9,6 +14,8 @@ export function Admin({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'pending' | 'reports'>('pending')
   const [emailInput, setEmailInput] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [statusMessage, setStatusMessage] = useState('')
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return localStorage.getItem('mopani_admin_email') === 'phasharonny@gmail.com'
   })
@@ -22,27 +29,32 @@ export function Admin({ onBack }: { onBack: () => void }) {
   const loadAdminData = async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('profiles')
         .select('*')
         .eq('is_approved', false)
         .eq('is_banned', false)
 
-      let profiles = data || []
-      const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
+      const profiles = data || []
+      const localProfiles = getLocalProfiles()
       const combined = [
         ...profiles,
-        ...localProfiles.filter((lp: any) => !profiles.some((dp: any) => dp.id === lp.id) && !lp.is_approved && !lp.is_banned)
+        ...localProfiles.filter(
+          (lp) => !profiles.some((dp: any) => dp.id === lp.id) && !lp.is_approved && !lp.is_banned
+        ),
       ]
       setPendingList(combined)
 
-      const { data: repData } = await supabase.from('reports').select('*').order('created_at', { ascending: false })
+      const { data: repData } = await supabase
+        .from('reports')
+        .select('*')
+        .order('created_at', { ascending: false })
       const localReports = JSON.parse(localStorage.getItem('mopani_reports') || '[]')
       setReportsList([...(repData || []), ...localReports])
     } catch (err) {
       console.warn('Error loading admin data, using local storage fallback:', err)
-      const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
-      setPendingList(localProfiles.filter((p: any) => !p.is_approved && !p.is_banned))
+      const localProfiles = getLocalProfiles()
+      setPendingList(localProfiles.filter((p) => !p.is_approved && !p.is_banned))
       setReportsList(JSON.parse(localStorage.getItem('mopani_reports') || '[]'))
     } finally {
       setLoading(false)
@@ -52,28 +64,22 @@ export function Admin({ onBack }: { onBack: () => void }) {
   const approveProfile = async (id: string) => {
     try {
       await supabase.from('profiles').update({ is_approved: true }).eq('id', id)
-      const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
-      const updated = localProfiles.map((p: any) => (p.id === id ? { ...p, is_approved: true } : p))
-      localStorage.setItem('mopani_local_profiles', JSON.stringify(updated))
-
-      setPendingList(pendingList.filter((p) => p.id !== id))
-      alert('Profile approved and now live in discover feed!')
+      updateProfileModerationStatus(id, { is_approved: true })
+      setPendingList((prev) => prev.filter((p) => p.id !== id))
+      setStatusMessage('Profile approved and now live in Discover and Matches.')
     } catch (err: any) {
-      alert('Error approving: ' + err.message)
+      setStatusMessage('Error approving: ' + err.message)
     }
   }
 
   const banProfile = async (id: string) => {
     try {
       await supabase.from('profiles').update({ is_banned: true }).eq('id', id)
-      const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
-      const updated = localProfiles.map((p: any) => (p.id === id ? { ...p, is_banned: true } : p))
-      localStorage.setItem('mopani_local_profiles', JSON.stringify(updated))
-
-      setPendingList(pendingList.filter((p) => p.id !== id))
-      alert('Profile banned.')
+      updateProfileModerationStatus(id, { is_banned: true })
+      setPendingList((prev) => prev.filter((p) => p.id !== id))
+      setStatusMessage('Profile banned.')
     } catch (err: any) {
-      alert('Error banning: ' + err.message)
+      setStatusMessage('Error banning: ' + err.message)
     }
   }
 
@@ -92,15 +98,21 @@ export function Admin({ onBack }: { onBack: () => void }) {
           <form
             onSubmit={(e) => {
               e.preventDefault()
+              setAuthError('')
               if (emailInput.trim().toLowerCase() === 'phasharonny@gmail.com') {
                 localStorage.setItem('mopani_admin_email', 'phasharonny@gmail.com')
                 setIsAuthenticated(true)
               } else {
-                alert('Access Denied: Only phasharonny@gmail.com can access the admin page.')
+                setAuthError('Access Denied: Only phasharonny@gmail.com can access the admin page.')
               }
             }}
             className="space-y-4 pt-2"
           >
+            {authError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-xs font-semibold px-3 py-2 rounded-xl">
+                {authError}
+              </div>
+            )}
             <input
               type="email"
               placeholder="Enter your admin email"
@@ -143,7 +155,7 @@ export function Admin({ onBack }: { onBack: () => void }) {
           <h1 className="text-2xl sm:text-3xl font-black text-gray-900 flex items-center gap-2">
             <ShieldCheck className="w-7 h-7 text-rose-600" /> Admin Safety & Moderation
           </h1>
-          <p className="text-xs sm:text-sm text-gray-500">Review pending profiles and community reports to keep Mopani Singles safe.</p>
+          <p className="text-xs sm:text-sm text-gray-500">Review pending profiles and community reports to keep Mopani Singles-v2 safe.</p>
         </div>
         <div className="flex gap-2 bg-white p-1.5 rounded-2xl border border-gray-200 shadow-xs">
           <button
@@ -165,6 +177,15 @@ export function Admin({ onBack }: { onBack: () => void }) {
         </div>
       </div>
 
+      {statusMessage && (
+        <div className="mb-6 bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold px-4 py-3 rounded-2xl flex items-center justify-between">
+          <span>{statusMessage}</span>
+          <button onClick={() => setStatusMessage('')} className="underline text-rose-600">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {loading ? (
         <div className="text-center py-16 text-gray-500">Loading moderation queue...</div>
       ) : activeTab === 'pending' ? (
@@ -179,7 +200,12 @@ export function Admin({ onBack }: { onBack: () => void }) {
             {pendingList.map((p) => (
               <div key={p.id} className="bg-white rounded-2xl overflow-hidden border border-gray-200 shadow-md flex flex-col">
                 <div className="relative h-56 bg-gray-100">
-                  <img src={p.photo_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=500'} alt={p.full_name} className="w-full h-full object-cover" />
+                  <ProfileAvatar
+                    src={p.photo_url}
+                    name={p.full_name}
+                    className="w-full h-full"
+                    textSizeClass="text-3xl"
+                  />
                   <div className="absolute top-3 right-3 bg-amber-500 text-gray-900 text-xs font-bold px-2.5 py-1 rounded-full">
                     Pending Review
                   </div>

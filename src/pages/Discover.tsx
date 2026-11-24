@@ -1,11 +1,16 @@
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
 import { ReportModal } from '@/components/ReportModal'
-import { MOPANI_16_PROFILES } from '@/utils/seedProfiles'
-import { MapPin, MessageCircle, ShieldCheck, Heart, Sparkles, Filter, Search } from 'lucide-react'
+import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { Logo } from '@/components/Logo'
+import {
+  Profile,
+  fetchApprovedProfiles,
+  getActiveProfileId,
+  normalizePhone,
+} from '@/utils/profileStorage'
+import { MapPin, MessageCircle, ShieldCheck, Heart, Sparkles, Filter, Search, Lock } from 'lucide-react'
 
-const VILLAGES = {
+const VILLAGES: Record<string, string[]> = {
   "Maruleng": ["Lorraine", "Sekororo", "Trichardtsdal", "The Oaks", "Hoedspruit", "Makhutsi"],
   "Greater Tzaneen": ["Tzaneen", "Lenyenye", "Letsitele", "Maake", "Nkowankowa"],
   "Greater Letaba": ["Modjadjiskloof", "Ga-Kgapane", "Mokwakwaila"],
@@ -13,9 +18,16 @@ const VILLAGES = {
   "Greater Giyani": ["Giyani", "Dzumeri", "Nkomo"]
 }
 
-export function Discover({ onGoRegister }: { onGoRegister: () => void }) {
-  const [profiles, setProfiles] = useState<any[]>([])
+export function Discover({
+  onGoRegister,
+  onStartChat,
+}: {
+  onGoRegister: () => void
+  onStartChat: (profileId: string) => void
+}) {
+  const [profiles, setProfiles] = useState<Profile[]>([])
   const [loading, setLoading] = useState(true)
+  const [activeProfileId] = useState(() => getActiveProfileId())
   const [selectedMunicipality, setSelectedMunicipality] = useState('')
   const [selectedVillage, setSelectedVillage] = useState('')
   const [selectedIntention, setSelectedIntention] = useState('')
@@ -32,26 +44,8 @@ export function Discover({ onGoRegister }: { onGoRegister: () => void }) {
   const fetchProfiles = async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('is_approved', true)
-        .eq('is_banned', false)
-        .order('created_at', { ascending: false })
-
-      if (error || !data || data.length === 0) {
-        const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
-        const combined = [...MOPANI_16_PROFILES, ...localProfiles].filter(p => p.is_approved && !p.is_banned)
-        setProfiles(combined)
-      } else {
-        const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
-        const combined = [...data, ...localProfiles.filter((lp: any) => !data.some((dp: any) => dp.id === lp.id))]
-        setProfiles(combined.filter(p => p.is_approved && !p.is_banned))
-      }
-    } catch (err) {
-      console.warn('Error fetching profiles, using 16 Mopani seed fallback:', err)
-      const localProfiles = JSON.parse(localStorage.getItem('mopani_local_profiles') || '[]')
-      setProfiles([...MOPANI_16_PROFILES, ...localProfiles].filter(p => p.is_approved && !p.is_banned))
+      const approved = await fetchApprovedProfiles()
+      setProfiles(approved)
     } finally {
       setLoading(false)
     }
@@ -73,11 +67,9 @@ export function Discover({ onGoRegister }: { onGoRegister: () => void }) {
   })
 
   const openWhatsApp = (whatsappNumber: string, name: string) => {
-    let cleanNum = whatsappNumber.replace(/\D/g, '')
-    if (cleanNum.startsWith('0')) {
-      cleanNum = '27' + cleanNum.substring(1)
-    }
-    const message = encodeURIComponent(`Hi ${name}, I saw your profile on Mopani Singles. I would love to connect!`)
+    const cleanNum = normalizePhone(whatsappNumber)
+    if (!cleanNum) return
+    const message = encodeURIComponent(`Hi ${name}, I saw your profile on Mopani Singles-v2. I would love to connect!`)
     window.open(`https://wa.me/${cleanNum}?text=${message}`, '_blank')
   }
 
@@ -87,20 +79,20 @@ export function Discover({ onGoRegister }: { onGoRegister: () => void }) {
         <div className="absolute right-0 top-0 w-96 h-96 bg-white/10 rounded-full blur-3xl pointer-events-none" />
         <div className="relative z-10 max-w-2xl">
           <div className="inline-flex items-center gap-2 bg-rose-950/60 backdrop-blur-md px-3 py-1 rounded-full text-xs font-medium text-rose-200 mb-4 border border-rose-500/30">
-            <Sparkles className="w-3.5 h-3.5 text-amber-400" /> 16+ Verified Mopani District Singles
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Verified Mopani District Singles
           </div>
           <h1 className="text-3xl md:text-5xl font-black tracking-tight mb-4">
             Find Your Special Someone in Mopani
           </h1>
           <p className="text-rose-100 text-sm md:text-base mb-6 leading-relaxed">
-            Connecting singles across Maruleng, Greater Tzaneen, Greater Letaba, Ba-Phalaborwa, and Greater Giyani. Safe, admin-approved profiles with POPIA privacy protection.
+            Connecting real singles across Maruleng, Greater Tzaneen, Greater Letaba, Ba-Phalaborwa, and Greater Giyani. Safe, admin-approved profiles with private 1-on-1 messaging.
           </p>
           <div className="flex flex-wrap gap-4">
             <button
               onClick={onGoRegister}
               className="bg-amber-500 hover:bg-amber-600 text-gray-900 font-bold px-6 py-3 rounded-2xl shadow-lg transition flex items-center gap-2 text-sm"
             >
-              <Heart className="w-4 h-4 fill-gray-900" /> Create Your Profile Free
+              <Heart className="w-4 h-4 fill-gray-900" /> Create Profile Free
             </button>
           </div>
         </div>
@@ -167,7 +159,7 @@ export function Discover({ onGoRegister }: { onGoRegister: () => void }) {
           >
             <option value="">All Villages / Towns</option>
             {selectedMunicipality &&
-              (VILLAGES as any)[selectedMunicipality]?.map((v: string) => (
+              VILLAGES[selectedMunicipality]?.map((v) => (
                 <option key={v} value={v}>{v}</option>
               ))}
           </select>
@@ -200,86 +192,114 @@ export function Discover({ onGoRegister }: { onGoRegister: () => void }) {
       ) : filteredProfiles.length === 0 ? (
         <div className="bg-white rounded-2xl p-12 text-center border border-gray-200 shadow-sm">
           <Heart className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-          <h3 className="text-lg font-bold text-gray-800 mb-1">No profiles found</h3>
-          <p className="text-sm text-gray-500 mb-4">Try adjusting your filters or be the first to create a profile in this area!</p>
+          <h3 className="text-lg font-bold text-gray-800 mb-1">
+            {profiles.length === 0 ? 'No approved profiles yet' : 'No matching profiles found'}
+          </h3>
+          <p className="text-sm text-gray-500 mb-4 max-w-md mx-auto">
+            {profiles.length === 0
+              ? 'Be the first to register a real profile in Mopani District. Once approved by the admin safety review, profiles appear here.'
+              : 'Try adjusting your filters or create a new profile in this area.'}
+          </p>
           <button
             onClick={onGoRegister}
-            className="bg-rose-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold shadow-md"
+            className="bg-rose-700 hover:bg-rose-800 text-white px-5 py-2.5 rounded-xl text-sm font-semibold shadow-md transition"
           >
             Create Profile Now
           </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {filteredProfiles.map((p) => (
-            <div
-              key={p.id}
-              className="bg-white rounded-2xl overflow-hidden border border-rose-100 shadow-md hover:shadow-xl transition-all duration-300 flex flex-col group"
-            >
-              <div className="relative h-64 w-full bg-gray-200 overflow-hidden">
-                <img
-                  src={p.photo_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=500'}
-                  alt={p.full_name}
-                  className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+          {filteredProfiles.map((p) => {
+            const isActiveSelf = p.id === activeProfileId
+            return (
+              <div
+                key={p.id}
+                className="bg-white rounded-2xl overflow-hidden border border-rose-100 shadow-md hover:shadow-xl transition-all duration-300 flex flex-col group"
+              >
+                <div className="relative h-64 w-full bg-gray-200 overflow-hidden">
+                  <ProfileAvatar
+                    src={p.photo_url}
+                    name={p.full_name}
+                    className="w-full h-full group-hover:scale-105 transition duration-500"
+                    textSizeClass="text-4xl"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
 
-                <div className="absolute top-3 left-3 flex gap-2">
-                  <span className="bg-black/50 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5 text-rose-400" /> Verified 18+
-                  </span>
-                </div>
-
-                <div className="absolute top-3 right-3">
-                  <span className="bg-rose-700/90 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-bold">
-                    {p.intention || 'Dating'}
-                  </span>
-                </div>
-
-                <div className="absolute bottom-3 left-3 right-3 text-white">
-                  <h3 className="text-xl font-bold flex items-center gap-2">
-                    {p.full_name}, {p.age}
-                  </h3>
-                  <p className="text-xs text-rose-200 flex items-center gap-1 mt-0.5">
-                    <MapPin className="w-3.5 h-3.5" /> {p.village}, {p.municipality}
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 font-medium">
-                    <span className="bg-gray-100 px-2 py-0.5 rounded">Language: {p.language || 'Sepedi'}</span>
-                    <span className="bg-rose-50 text-rose-700 px-2 py-0.5 rounded font-semibold">
-                      {p.gender}
+                  <div className="absolute top-3 left-3 flex gap-2">
+                    <span className="bg-black/50 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-rose-400" /> Verified 18+
                     </span>
                   </div>
-                  <p className="text-sm text-gray-700 line-clamp-3 leading-relaxed">
-                    "{p.bio}"
-                  </p>
+
+                  <div className="absolute top-3 right-3">
+                    <span className="bg-rose-700/90 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-bold">
+                      {p.intention || 'Dating'}
+                    </span>
+                  </div>
+
+                  <div className="absolute bottom-3 left-3 right-3 text-white">
+                    <h3 className="text-xl font-bold flex items-center gap-2">
+                      {p.full_name}, {p.age}
+                    </h3>
+                    <p className="text-xs text-rose-200 flex items-center gap-1 mt-0.5">
+                      <MapPin className="w-3.5 h-3.5" /> {p.village}, {p.municipality}
+                    </p>
+                  </div>
                 </div>
 
-                <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-2">
-                  <button
-                    onClick={() => {
-                      setReportingProfile({ id: p.id, name: p.full_name })
-                      setReportModalOpen(true)
-                    }}
-                    className="text-xs text-gray-400 hover:text-red-600 underline transition"
-                  >
-                    Report
-                  </button>
+                <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 font-medium">
+                      <span className="bg-gray-100 px-2 py-0.5 rounded">Language: {p.language || 'Sepedi'}</span>
+                      <span className="bg-rose-50 text-rose-700 px-2 py-0.5 rounded font-semibold">
+                        {p.gender}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700 line-clamp-3 leading-relaxed">
+                      "{p.bio}"
+                    </p>
+                  </div>
 
-                  <button
-                    onClick={() => openWhatsApp(p.whatsapp, p.full_name)}
-                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-semibold py-2.5 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2 text-xs"
-                  >
-                    <MessageCircle className="w-4 h-4 fill-white text-rose-600" /> WhatsApp Chat
-                  </button>
+                  <div className="pt-2 border-t border-gray-100 space-y-2">
+                    {!isActiveSelf ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => onStartChat(p.id)}
+                          className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-semibold py-2.5 px-3 rounded-xl shadow-md transition flex items-center justify-center gap-1.5 text-xs"
+                        >
+                          <Lock className="w-3.5 h-3.5" /> Private Chat
+                        </button>
+                        {p.whatsapp && (
+                          <button
+                            onClick={() => openWhatsApp(p.whatsapp, p.full_name)}
+                            className="bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1 text-xs"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center text-xs font-semibold text-rose-700 bg-rose-50 py-2 rounded-xl">
+                        Your Active Profile
+                      </div>
+                    )}
+
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => {
+                          setReportingProfile({ id: p.id, name: p.full_name })
+                          setReportModalOpen(true)
+                        }}
+                        className="text-xs text-gray-400 hover:text-red-600 underline transition"
+                      >
+                        Report
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
