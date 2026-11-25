@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
 import { calculateCompatibility, MatchResult } from '@/utils/matchingAlgorithm'
 import { BackButton } from '@/components/BackButton'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
@@ -40,11 +41,7 @@ export function Matches({
   const [matches, setMatches] = useState<MatchResult[]>([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    fetchAndCalculateMatches()
-  }, [preferences])
-
-  const fetchAndCalculateMatches = async () => {
+  const fetchAndCalculateMatches = useCallback(async () => {
     setLoading(true)
     try {
       const approved = await fetchApprovedProfiles()
@@ -60,7 +57,26 @@ export function Matches({
     } finally {
       setLoading(false)
     }
-  }
+  }, [preferences])
+
+  useEffect(() => {
+    fetchAndCalculateMatches()
+
+    const channel = supabase
+      .channel('public:profiles-matches')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles' },
+        () => {
+          fetchAndCalculateMatches()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [fetchAndCalculateMatches])
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -117,7 +133,7 @@ export function Matches({
           <Heart className="w-12 h-12 text-gray-300 mx-auto" />
           <h3 className="text-lg font-bold text-gray-800">No real matches available yet</h3>
           <p className="text-sm text-gray-500 max-w-md mx-auto">
-            There are currently no other approved profiles to match with. Create a profile or wait for community members to be approved by admin.
+            There are currently no other profiles to match with. Create a profile or wait for other community members to join.
           </p>
           <button
             onClick={onGoRegister}

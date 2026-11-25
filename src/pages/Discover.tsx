@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
 import { ReportModal } from '@/components/ReportModal'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { Logo } from '@/components/Logo'
@@ -8,7 +9,7 @@ import {
   getActiveProfileId,
   normalizePhone,
 } from '@/utils/profileStorage'
-import { MapPin, MessageCircle, ShieldCheck, Heart, Sparkles, Filter, Search, Lock } from 'lucide-react'
+import { MapPin, MessageCircle, ShieldCheck, Heart, Sparkles, Filter, Search, Lock, RefreshCw } from 'lucide-react'
 
 const VILLAGES: Record<string, string[]> = {
   "Maruleng": ["Lorraine", "Sekororo", "Trichardtsdal", "The Oaks", "Hoedspruit", "Makhutsi"],
@@ -37,11 +38,7 @@ export function Discover({
   const [reportModalOpen, setReportModalOpen] = useState(false)
   const [reportingProfile, setReportingProfile] = useState<{ id: string; name: string } | null>(null)
 
-  useEffect(() => {
-    fetchProfiles()
-  }, [])
-
-  const fetchProfiles = async () => {
+  const fetchProfiles = useCallback(async () => {
     setLoading(true)
     try {
       const approved = await fetchApprovedProfiles()
@@ -49,7 +46,26 @@ export function Discover({
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    fetchProfiles()
+
+    const channel = supabase
+      .channel('public:profiles-discover')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles' },
+        () => {
+          fetchProfiles()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [fetchProfiles])
 
   const filteredProfiles = profiles.filter((p) => {
     if (selectedMunicipality && p.municipality !== selectedMunicipality) return false
@@ -85,7 +101,7 @@ export function Discover({
             Find Your Special Someone in Mopani
           </h1>
           <p className="text-rose-100 text-sm md:text-base mb-6 leading-relaxed">
-            Connecting real singles across Maruleng, Greater Tzaneen, Greater Letaba, Ba-Phalaborwa, and Greater Giyani. Safe, admin-approved profiles with private 1-on-1 messaging.
+            Connecting real singles across Maruleng, Greater Tzaneen, Greater Letaba, Ba-Phalaborwa, and Greater Giyani with real-time private chat and file sharing.
           </p>
           <div className="flex flex-wrap gap-4">
             <button
@@ -109,20 +125,29 @@ export function Discover({
           <h2 className="text-base font-bold text-gray-900 flex items-center gap-2">
             <Filter className="w-4 h-4 text-rose-600" /> Filter Singles ({filteredProfiles.length})
           </h2>
-          {(selectedMunicipality || selectedVillage || selectedIntention || selectedGender || searchQuery) && (
+          <div className="flex items-center gap-3">
+            {(selectedMunicipality || selectedVillage || selectedIntention || selectedGender || searchQuery) && (
+              <button
+                onClick={() => {
+                  setSelectedMunicipality('')
+                  setSelectedVillage('')
+                  setSelectedIntention('')
+                  setSelectedGender('')
+                  setSearchQuery('')
+                }}
+                className="text-xs text-rose-700 hover:underline font-semibold"
+              >
+                Reset Filters
+              </button>
+            )}
             <button
-              onClick={() => {
-                setSelectedMunicipality('')
-                setSelectedVillage('')
-                setSelectedIntention('')
-                setSelectedGender('')
-                setSearchQuery('')
-              }}
-              className="text-xs text-rose-700 hover:underline font-semibold"
+              onClick={fetchProfiles}
+              disabled={loading}
+              className="text-xs text-gray-600 hover:text-rose-700 font-semibold flex items-center gap-1"
             >
-              Reset Filters
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
             </button>
-          )}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -193,11 +218,11 @@ export function Discover({
         <div className="bg-white rounded-2xl p-12 text-center border border-gray-200 shadow-sm">
           <Heart className="w-12 h-12 text-gray-300 mx-auto mb-3" />
           <h3 className="text-lg font-bold text-gray-800 mb-1">
-            {profiles.length === 0 ? 'No approved profiles yet' : 'No matching profiles found'}
+            {profiles.length === 0 ? 'No profiles registered yet' : 'No matching profiles found'}
           </h3>
           <p className="text-sm text-gray-500 mb-4 max-w-md mx-auto">
             {profiles.length === 0
-              ? 'Be the first to register a real profile in Mopani District. Once approved by the admin safety review, profiles appear here.'
+              ? 'Be the first to register a real profile in Mopani District to connect and chat with other users.'
               : 'Try adjusting your filters or create a new profile in this area.'}
           </p>
           <button

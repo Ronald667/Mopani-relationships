@@ -1,5 +1,11 @@
-import {createRoot} from 'react-dom/client';
-import App from './App.tsx';
-import './index.css';
+import { createRoot } from 'react-dom/client'
+import App from './App.tsx'
+import { hydrateSupabaseFromServerConfig } from './lib/supabase'
+import './index.css'
 
-createRoot(document.getElementById('root')!).render(<App />);
+async function bootstrap() {
+  await hydrateSupabaseFromServerConfig()
+  createRoot(document.getElementById('root')!).render(<App />)
+}
+
+bootstrap()

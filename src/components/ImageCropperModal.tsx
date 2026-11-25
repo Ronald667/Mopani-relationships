@@ -4,7 +4,7 @@ import { Camera, Upload, Check, X, RotateCw, ZoomIn, Image as ImageIcon } from '
 interface ImageCropperModalProps {
   isOpen: boolean
   onClose: () => void
-  onCropComplete: (croppedBase64: string) => void
+  onCropComplete: (croppedBase64: string, croppedBlob?: Blob) => void
 }
 
 export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCropperModalProps) {
@@ -45,7 +45,6 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
     }
   }
 
-  // Draw on canvas when image or transform changes
   useEffect(() => {
     if (!imageSrc || !canvasRef.current) return
     const canvas = canvasRef.current
@@ -70,7 +69,6 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
     ctx.rotate((rotation * Math.PI) / 180)
     ctx.scale(zoom, zoom)
 
-    // center image
     const w = img.width
     const h = img.height
     const aspect = w / h
@@ -108,9 +106,16 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
 
   const handleSave = () => {
     if (!canvasRef.current) return
-    const croppedUrl = canvasRef.current.toDataURL('image/jpeg', 0.85)
-    onCropComplete(croppedUrl)
-    onClose()
+    const canvas = canvasRef.current
+    const croppedUrl = canvas.toDataURL('image/jpeg', 0.85)
+    canvas.toBlob(
+      (blob) => {
+        onCropComplete(croppedUrl, blob || undefined)
+        onClose()
+      },
+      'image/jpeg',
+      0.85
+    )
   }
 
   if (!isOpen) return null
@@ -120,7 +125,7 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
       <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl overflow-hidden flex flex-col">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-            <Camera className="w-6 h-6 text-emerald-600" />
+            <Camera className="w-6 h-6 text-rose-700" />
             Upload Photo from Device
           </h2>
           <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100">
@@ -129,18 +134,17 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
         </div>
 
         {!imageSrc ? (
-          <div className="flex flex-col items-center justify-center border-2 border-dashed border-emerald-300 rounded-2xl p-8 bg-emerald-50/50 text-center space-y-4">
-            <div className="w-16 h-16 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center shadow-inner">
+          <div className="flex flex-col items-center justify-center border-2 border-dashed border-rose-300 rounded-2xl p-8 bg-rose-50/50 text-center space-y-4">
+            <div className="w-16 h-16 bg-rose-100 text-rose-700 rounded-full flex items-center justify-center shadow-inner">
               <Upload className="w-8 h-8" />
             </div>
             <div>
               <p className="font-bold text-gray-900 text-base mb-1">Select from Phone Storage or Gallery</p>
               <p className="text-xs text-gray-500 max-w-xs mx-auto">
-                Access your phone device photo library, album, or take a new picture with your camera.
+                Upload a photo to your profile stored securely in Supabase Storage.
               </p>
             </div>
 
-            {/* Hidden file inputs */}
             <input
               ref={fileInputRef}
               type="file"
@@ -160,7 +164,7 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
             <div className="flex flex-col sm:flex-row gap-3 w-full pt-2">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2 text-sm"
+                className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-semibold py-3 px-4 rounded-xl shadow-md transition flex items-center justify-center gap-2 text-sm"
               >
                 <ImageIcon className="w-4 h-4" /> Device Gallery / Files
               </button>
@@ -176,7 +180,7 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
           <div className="flex flex-col items-center">
             <p className="text-xs text-gray-500 mb-2">Drag to reposition, use slider to zoom & rotate</p>
             <div
-              className="relative w-[280px] h-[280px] rounded-full overflow-hidden border-4 border-emerald-600 shadow-inner cursor-move bg-gray-900 flex items-center justify-center select-none touch-none"
+              className="relative w-[280px] h-[280px] rounded-full overflow-hidden border-4 border-rose-600 shadow-inner cursor-move bg-gray-900 flex items-center justify-center select-none touch-none"
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
@@ -187,7 +191,6 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
               <canvas ref={canvasRef} className="w-full h-full object-cover" />
             </div>
 
-            {/* Controls */}
             <div className="w-full mt-4 space-y-3">
               <div className="flex items-center gap-2">
                 <ZoomIn className="w-4 h-4 text-gray-500" />
@@ -199,7 +202,7 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
                   step="0.05"
                   value={zoom}
                   onChange={(e) => setZoom(parseFloat(e.target.value))}
-                  className="w-full accent-emerald-600"
+                  className="w-full accent-rose-600"
                 />
               </div>
 
@@ -212,8 +215,8 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
                   max="360"
                   step="90"
                   value={rotation}
-                  onChange={(e) => setRotation(parseInt(e.target.value))}
-                  className="w-full accent-emerald-600"
+                  onChange={(e) => setRotation(parseInt(e.target.value, 10))}
+                  className="w-full accent-rose-600"
                 />
               </div>
 
@@ -226,7 +229,7 @@ export function ImageCropperModal({ isOpen, onClose, onCropComplete }: ImageCrop
                 </button>
                 <button
                   onClick={handleSave}
-                  className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-2.5 rounded-xl text-sm shadow-md transition flex items-center justify-center gap-2"
+                  className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-semibold py-2.5 rounded-xl text-sm shadow-md transition flex items-center justify-center gap-2"
                 >
                   <Check className="w-4 h-4" /> Save Photo
                 </button>

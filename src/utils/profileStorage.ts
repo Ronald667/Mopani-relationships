@@ -62,13 +62,80 @@ export function normalizePhone(value: string): string {
   return digits
 }
 
+export function toSupabaseProfilePayload(profile: Profile) {
+  return {
+    id: profile.id,
+    full_name: profile.full_name,
+    age: profile.age,
+    gender: profile.gender,
+    municipality: profile.municipality,
+    village: profile.village,
+    language: profile.language,
+    intention: profile.intention,
+    bio: profile.bio,
+    whatsapp: profile.whatsapp,
+    photo_url: profile.photo_url,
+    is_approved: profile.is_approved ?? true,
+    is_banned: profile.is_banned ?? false,
+    created_at: profile.created_at || new Date().toISOString(),
+  }
+}
+
+export async function saveProfileToSupabase(profile: Profile): Promise<{
+  profile: Profile
+  syncedToSupabase: boolean
+  error?: string
+}> {
+  const payload = toSupabaseProfilePayload(profile)
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .upsert([payload], { onConflict: 'id' })
+      .select()
+      .single()
+
+    if (error) {
+      return { profile, syncedToSupabase: false, error: error.message }
+    }
+    return {
+      profile: (data as Profile) || profile,
+      syncedToSupabase: true,
+    }
+  } catch (err: any) {
+    return {
+      profile,
+      syncedToSupabase: false,
+      error: err?.message || 'Unable to sync profile to Supabase',
+    }
+  }
+}
+
+export async function fetchProfileById(id: string): Promise<Profile | null> {
+  if (!id) return null
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+
+    if (!error && data) {
+      const remote = data as Profile
+      upsertLocalProfile(remote)
+      return remote
+    }
+  } catch {
+    // fall back to local cache
+  }
+  return getLocalProfiles().find((p) => p.id === id) || null
+}
+
 export function getMyProfiles(): Profile[] {
   const stored = safeParseJson<Profile[]>(localStorage.getItem(MY_PROFILES_KEY), [])
   if (stored.length > 0) {
     return stored
   }
 
-  // Migrate legacy single-profile storage if present
   const legacy = safeParseJson<Profile | null>(localStorage.getItem(LEGACY_MY_PROFILE_KEY), null)
   if (legacy && legacy.id) {
     const migrated = [legacy]
@@ -209,6 +276,7 @@ export async function fetchApprovedProfiles(): Promise<Profile[]> {
 
     for (const p of remoteProfiles) {
       map.set(p.id, p)
+      upsertLocalProfile(p)
     }
     for (const lp of localApproved) {
       if (!map.has(lp.id)) {

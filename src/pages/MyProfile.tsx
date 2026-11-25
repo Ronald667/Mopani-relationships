@@ -1,5 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import {
+  deleteStorageFileByUrl,
+  uploadDataUrlToSupabase,
+  uploadFileToSupabase,
+} from '@/lib/supabase/storage'
 import { ImageCropperModal } from '@/components/ImageCropperModal'
 import { BackButton } from '@/components/BackButton'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
@@ -8,6 +13,7 @@ import {
   deleteMyProfile,
   getActiveProfileId,
   getMyProfiles,
+  saveProfileToSupabase,
   setActiveProfileId,
   syncMyProfilesStatus,
   updateMyProfile,
@@ -45,8 +51,10 @@ export function MyProfile({
   const [activeProfileIdState, setActiveProfileIdState] = useState<string>('')
   const [selectedId, setSelectedId] = useState<string>('')
   const [isEditing, setIsEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [cropperOpen, setCropperOpen] = useState(false)
+  const [pendingPhotoBlob, setPendingPhotoBlob] = useState<Blob | null>(null)
   const [formData, setFormData] = useState<Profile | null>(null)
   const [feedback, setFeedback] = useState('')
 
@@ -79,6 +87,7 @@ export function MyProfile({
   const handleSelectProfile = (profile: Profile) => {
     setSelectedId(profile.id)
     setFormData(profile)
+    setPendingPhotoBlob(null)
     setIsEditing(false)
     setConfirmingDelete(false)
     setFeedback('')
@@ -90,43 +99,55 @@ export function MyProfile({
     setFeedback('Active profile updated for private messaging and smart matching.')
   }
 
-  const handleCropComplete = (croppedBase64: string) => {
+  const handleCropComplete = (croppedBase64: string, blob?: Blob) => {
     if (!formData) return
     setFormData({ ...formData, photo_url: croppedBase64 })
+    setPendingPhotoBlob(blob || null)
   }
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!formData) return
 
+    setSaving(true)
     try {
-      await supabase
-        .from('profiles')
-        .update({
-          full_name: formData.full_name,
-          age: formData.age,
-          municipality: formData.municipality,
-          village: formData.village,
-          intention: formData.intention,
-          language: formData.language,
-          bio: formData.bio,
-          whatsapp: formData.whatsapp,
-          photo_url: formData.photo_url,
-        })
-        .eq('id', formData.id)
-    } catch {
-      // keep local update if Supabase is unavailable
-    }
+      let nextPhotoUrl = formData.photo_url
+      const oldPhotoUrl = selectedProfile?.photo_url
 
-    const updated = updateMyProfile(formData)
-    setProfiles(updated)
-    setIsEditing(false)
-    setFeedback('Profile updated successfully!')
+      if (pendingPhotoBlob || (nextPhotoUrl && nextPhotoUrl.startsWith('data:'))) {
+        const uploadRes = pendingPhotoBlob
+          ? await uploadFileToSupabase(pendingPhotoBlob, 'profiles', `${formData.id}.jpg`)
+          : await uploadDataUrlToSupabase(nextPhotoUrl, 'profiles', `${formData.id}.jpg`)
+
+        if (uploadRes.url) {
+          nextPhotoUrl = uploadRes.url
+        }
+        if (uploadRes.storedInSupabase && oldPhotoUrl && oldPhotoUrl !== nextPhotoUrl) {
+          await deleteStorageFileByUrl(oldPhotoUrl)
+        }
+      }
+
+      const nextProfile: Profile = {
+        ...formData,
+        photo_url: nextPhotoUrl,
+      }
+
+      const { profile: syncedProfile } = await saveProfileToSupabase(nextProfile)
+      const updated = updateMyProfile(syncedProfile)
+      setProfiles(updated)
+      setFormData(syncedProfile)
+      setPendingPhotoBlob(null)
+      setIsEditing(false)
+      setFeedback('Profile updated and synced!')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleDeleteSelected = async () => {
     if (!selectedProfile) return
     try {
+      await deleteStorageFileByUrl(selectedProfile.photo_url)
       await supabase.from('profiles').delete().eq('id', selectedProfile.id)
     } catch {
       // local removal still proceeds
@@ -185,7 +206,6 @@ export function MyProfile({
         </button>
       </div>
 
-      {/* Profile switcher for multi-profile ownership */}
       <div className="bg-white rounded-2xl p-4 border border-rose-100 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-xs font-bold uppercase tracking-wider text-gray-500">
@@ -267,6 +287,7 @@ export function MyProfile({
                 <button
                   onClick={() => {
                     setFormData(selectedProfile)
+                    setPendingPhotoBlob(null)
                     setIsEditing(true)
                     setFeedback('')
                   }}
@@ -497,9 +518,10 @@ export function MyProfile({
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-semibold py-2.5 rounded-xl text-sm shadow-md flex items-center justify-center gap-1.5"
+                  disabled={saving}
+                  className="flex-1 bg-rose-700 hover:bg-rose-800 disabled:opacity-60 text-white font-semibold py-2.5 rounded-xl text-sm shadow-md flex items-center justify-center gap-1.5"
                 >
-                  <Check className="w-4 h-4" /> Save Changes
+                  <Check className="w-4 h-4" /> {saving ? 'Uploading & Saving...' : 'Save Changes'}
                 </button>
               </div>
             </form>

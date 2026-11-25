@@ -1,12 +1,13 @@
 import React, { useState } from 'react'
-import { supabase } from '@/lib/supabase'
 import { ImageCropperModal } from '@/components/ImageCropperModal'
 import { BackButton } from '@/components/BackButton'
+import { uploadDataUrlToSupabase, uploadFileToSupabase } from '@/lib/supabase/storage'
 import {
   Profile,
   addMyProfile,
   generateProfileId,
   getMyProfiles,
+  saveProfileToSupabase,
 } from '@/utils/profileStorage'
 import { UserPlus, ShieldCheck, Camera, CheckCircle2, AlertCircle } from 'lucide-react'
 
@@ -42,26 +43,32 @@ export function Register({
   onBack: () => void
 }) {
   const [form, setForm] = useState(initialFormState)
+  const [photoBlob, setPhotoBlob] = useState<Blob | null>(null)
   const [existingCount, setExistingCount] = useState(() => getMyProfiles().length)
   const [cropperOpen, setCropperOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [successSubmitted, setSuccessSubmitted] = useState(false)
+  const [syncNotice, setSyncNotice] = useState('')
 
-  const handleCropComplete = (croppedBase64: string) => {
+  const handleCropComplete = (croppedBase64: string, blob?: Blob) => {
     setForm((prev) => ({ ...prev, photo_url: croppedBase64 }))
+    setPhotoBlob(blob || null)
     setErrorMsg('')
   }
 
   const handleCreateAnother = () => {
     setForm(initialFormState)
+    setPhotoBlob(null)
     setErrorMsg('')
+    setSyncNotice('')
     setSuccessSubmitted(false)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErrorMsg('')
+    setSyncNotice('')
 
     if (form.age < 18) {
       setErrorMsg('You must be 18+ to register.')
@@ -78,8 +85,17 @@ export function Register({
 
     setSubmitting(true)
     try {
+      const profileId = generateProfileId()
+
+      // Upload profile photo file to Supabase Storage
+      const uploadResult = photoBlob
+        ? await uploadFileToSupabase(photoBlob, 'profiles', `${profileId}.jpg`)
+        : await uploadDataUrlToSupabase(form.photo_url, 'profiles', `${profileId}.jpg`)
+
+      const resolvedPhotoUrl = uploadResult.url || form.photo_url
+
       const payload: Profile = {
-        id: generateProfileId(),
+        id: profileId,
         full_name: form.full_name.trim(),
         age: form.age,
         gender: form.gender,
@@ -89,24 +105,26 @@ export function Register({
         intention: form.intention,
         bio: form.bio.trim(),
         whatsapp: form.whatsapp.trim(),
-        photo_url: form.photo_url,
+        photo_url: resolvedPhotoUrl,
         consent_popia: form.consent_popia,
-        is_approved: false,
+        is_approved: true,
         is_banned: false,
         created_at: new Date().toISOString(),
       }
 
-      let savedProfile: Profile = payload
-      const { data, error } = await supabase
-        .from('profiles')
-        .insert([payload])
-        .select()
-        .single()
+      const { profile: savedProfile, syncedToSupabase, error: dbError } = await saveProfileToSupabase(payload)
 
-      if (error) {
-        console.warn('Supabase insert error (using local storage fallback):', error.message)
-      } else if (data) {
-        savedProfile = data as Profile
+      if (!syncedToSupabase || !uploadResult.storedInSupabase) {
+        const warnings: string[] = []
+        if (!uploadResult.storedInSupabase && uploadResult.error) {
+          warnings.push(`Photo storage: ${uploadResult.error}`)
+        }
+        if (!syncedToSupabase && dbError) {
+          warnings.push(`Profile database: ${dbError}`)
+        }
+        setSyncNotice(
+          `Saved locally on this device. To share across all users, ensure your Supabase anon key and supabase.sql setup are applied (${warnings.join('; ')}).`
+        )
       }
 
       const updatedList = addMyProfile(savedProfile)
@@ -127,10 +145,15 @@ export function Register({
           <div className="w-16 h-16 bg-rose-100 text-rose-700 rounded-full flex items-center justify-center mx-auto">
             <CheckCircle2 className="w-10 h-10" />
           </div>
-          <h2 className="text-2xl font-black text-gray-900">Submitted for Safety Review!</h2>
+          <h2 className="text-2xl font-black text-gray-900">Your Profile Is Live!</h2>
           <p className="text-sm text-gray-600 leading-relaxed">
-            Your profile has been created and set as your active profile ({existingCount} {existingCount === 1 ? 'profile' : 'profiles'} saved on this device). Once approved by the admin safety team, it will appear in Discover & Smart Matches.
+            Your profile has been created and set as your active profile ({existingCount} {existingCount === 1 ? 'profile' : 'profiles'} saved). You can now discover and chat privately with other Mopani Singles users.
           </p>
+          {syncNotice && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-2xl p-3 text-left">
+              {syncNotice}
+            </div>
+          )}
           <div className="pt-4 flex flex-wrap gap-3 justify-center">
             <button
               onClick={onGoMyProfile}
@@ -208,7 +231,7 @@ export function Register({
               </div>
             )}
             <p className="text-sm font-bold text-gray-800">Profile Picture (Required)</p>
-            <p className="text-xs text-gray-500 mb-3">Upload from device gallery or camera and crop your photo</p>
+            <p className="text-xs text-gray-500 mb-3">Uploaded directly to Supabase Storage for other app users to view</p>
             <button
               type="button"
               onClick={() => setCropperOpen(true)}
@@ -371,7 +394,7 @@ export function Register({
             disabled={submitting}
             className="w-full bg-rose-700 hover:bg-rose-800 text-white font-bold py-3.5 rounded-2xl shadow-lg transition flex items-center justify-center gap-2 text-sm disabled:opacity-60"
           >
-            <UserPlus className="w-4 h-4" /> {submitting ? 'Submitting...' : 'Submit Profile For Safety Review'}
+            <UserPlus className="w-4 h-4" /> {submitting ? 'Uploading & Creating Profile...' : 'Create & Publish Profile'}
           </button>
         </form>
       </div>

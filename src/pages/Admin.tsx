@@ -10,9 +10,10 @@ import { ShieldCheck, Check, Ban, AlertTriangle, Users, Lock } from 'lucide-reac
 
 export function Admin({ onBack }: { onBack: () => void }) {
   const [pendingList, setPendingList] = useState<any[]>([])
+  const [allActiveList, setAllActiveList] = useState<any[]>([])
   const [reportsList, setReportsList] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'pending' | 'reports'>('pending')
+  const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'reports'>('all')
   const [emailInput, setEmailInput] = useState('')
   const [authError, setAuthError] = useState('')
   const [statusMessage, setStatusMessage] = useState('')
@@ -32,18 +33,20 @@ export function Admin({ onBack }: { onBack: () => void }) {
       const { data } = await supabase
         .from('profiles')
         .select('*')
-        .eq('is_approved', false)
         .eq('is_banned', false)
+        .order('created_at', { ascending: false })
 
-      const profiles = data || []
-      const localProfiles = getLocalProfiles()
-      const combined = [
-        ...profiles,
-        ...localProfiles.filter(
-          (lp) => !profiles.some((dp: any) => dp.id === lp.id) && !lp.is_approved && !lp.is_banned
-        ),
-      ]
-      setPendingList(combined)
+      const remoteProfiles = data || []
+      const localProfiles = getLocalProfiles().filter((p) => !p.is_banned)
+      const mergedMap = new Map<string, any>()
+      for (const p of remoteProfiles) mergedMap.set(p.id, p)
+      for (const lp of localProfiles) {
+        if (!mergedMap.has(lp.id)) mergedMap.set(lp.id, lp)
+      }
+
+      const combined = Array.from(mergedMap.values())
+      setAllActiveList(combined.filter((p) => p.is_approved))
+      setPendingList(combined.filter((p) => !p.is_approved))
 
       const { data: repData } = await supabase
         .from('reports')
@@ -53,8 +56,9 @@ export function Admin({ onBack }: { onBack: () => void }) {
       setReportsList([...(repData || []), ...localReports])
     } catch (err) {
       console.warn('Error loading admin data, using local storage fallback:', err)
-      const localProfiles = getLocalProfiles()
-      setPendingList(localProfiles.filter((p) => !p.is_approved && !p.is_banned))
+      const localProfiles = getLocalProfiles().filter((p) => !p.is_banned)
+      setAllActiveList(localProfiles.filter((p) => p.is_approved))
+      setPendingList(localProfiles.filter((p) => !p.is_approved))
       setReportsList(JSON.parse(localStorage.getItem('mopani_reports') || '[]'))
     } finally {
       setLoading(false)
@@ -65,7 +69,11 @@ export function Admin({ onBack }: { onBack: () => void }) {
     try {
       await supabase.from('profiles').update({ is_approved: true }).eq('id', id)
       updateProfileModerationStatus(id, { is_approved: true })
+      const moved = pendingList.find((p) => p.id === id)
       setPendingList((prev) => prev.filter((p) => p.id !== id))
+      if (moved) {
+        setAllActiveList((prev) => [{ ...moved, is_approved: true }, ...prev])
+      }
       setStatusMessage('Profile approved and now live in Discover and Matches.')
     } catch (err: any) {
       setStatusMessage('Error approving: ' + err.message)
@@ -77,7 +85,8 @@ export function Admin({ onBack }: { onBack: () => void }) {
       await supabase.from('profiles').update({ is_banned: true }).eq('id', id)
       updateProfileModerationStatus(id, { is_banned: true })
       setPendingList((prev) => prev.filter((p) => p.id !== id))
-      setStatusMessage('Profile banned.')
+      setAllActiveList((prev) => prev.filter((p) => p.id !== id))
+      setStatusMessage('Profile banned and hidden from all users.')
     } catch (err: any) {
       setStatusMessage('Error banning: ' + err.message)
     }
@@ -132,6 +141,8 @@ export function Admin({ onBack }: { onBack: () => void }) {
     )
   }
 
+  const displayedProfiles = activeTab === 'pending' ? pendingList : allActiveList
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <BackButton onClick={onBack} label="Back to Discover" />
@@ -155,16 +166,24 @@ export function Admin({ onBack }: { onBack: () => void }) {
           <h1 className="text-2xl sm:text-3xl font-black text-gray-900 flex items-center gap-2">
             <ShieldCheck className="w-7 h-7 text-rose-600" /> Admin Safety & Moderation
           </h1>
-          <p className="text-xs sm:text-sm text-gray-500">Review pending profiles and community reports to keep Mopani Singles-v2 safe.</p>
+          <p className="text-xs sm:text-sm text-gray-500">Moderate live member profiles, pending items, and community reports.</p>
         </div>
-        <div className="flex gap-2 bg-white p-1.5 rounded-2xl border border-gray-200 shadow-xs">
+        <div className="flex flex-wrap gap-2 bg-white p-1.5 rounded-2xl border border-gray-200 shadow-xs">
+          <button
+            onClick={() => setActiveTab('all')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+              activeTab === 'all' ? 'bg-rose-700 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <Users className="w-4 h-4" /> Live Members ({allActiveList.length})
+          </button>
           <button
             onClick={() => setActiveTab('pending')}
             className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
               activeTab === 'pending' ? 'bg-rose-700 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100'
             }`}
           >
-            <Users className="w-4 h-4" /> Pending Approval ({pendingList.length})
+            <Users className="w-4 h-4" /> Pending ({pendingList.length})
           </button>
           <button
             onClick={() => setActiveTab('reports')}
@@ -188,16 +207,20 @@ export function Admin({ onBack }: { onBack: () => void }) {
 
       {loading ? (
         <div className="text-center py-16 text-gray-500">Loading moderation queue...</div>
-      ) : activeTab === 'pending' ? (
-        pendingList.length === 0 ? (
+      ) : activeTab === 'pending' || activeTab === 'all' ? (
+        displayedProfiles.length === 0 ? (
           <div className="bg-white rounded-2xl p-12 text-center border border-gray-200 shadow-sm">
             <Check className="w-12 h-12 text-rose-600 mx-auto mb-3" />
             <h3 className="text-lg font-bold text-gray-800">All caught up!</h3>
-            <p className="text-sm text-gray-500">No pending profiles waiting for approval.</p>
+            <p className="text-sm text-gray-500">
+              {activeTab === 'pending'
+                ? 'No pending profiles waiting for approval.'
+                : 'No active member profiles found.'}
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {pendingList.map((p) => (
+            {displayedProfiles.map((p) => (
               <div key={p.id} className="bg-white rounded-2xl overflow-hidden border border-gray-200 shadow-md flex flex-col">
                 <div className="relative h-56 bg-gray-100">
                   <ProfileAvatar
@@ -206,8 +229,12 @@ export function Admin({ onBack }: { onBack: () => void }) {
                     className="w-full h-full"
                     textSizeClass="text-3xl"
                   />
-                  <div className="absolute top-3 right-3 bg-amber-500 text-gray-900 text-xs font-bold px-2.5 py-1 rounded-full">
-                    Pending Review
+                  <div
+                    className={`absolute top-3 right-3 text-xs font-bold px-2.5 py-1 rounded-full ${
+                      p.is_approved ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-gray-900'
+                    }`}
+                  >
+                    {p.is_approved ? 'Live Profile' : 'Pending Review'}
                   </div>
                 </div>
                 <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
@@ -218,17 +245,19 @@ export function Admin({ onBack }: { onBack: () => void }) {
                     <p className="text-sm text-gray-700 bg-gray-50 p-3 rounded-xl border border-gray-100 italic">"{p.bio}"</p>
                   </div>
                   <div className="flex gap-2 pt-2 border-t border-gray-100">
-                    <button
-                      onClick={() => approveProfile(p.id)}
-                      className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-semibold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-1.5 shadow-sm"
-                    >
-                      <Check className="w-4 h-4" /> Approve
-                    </button>
+                    {!p.is_approved && (
+                      <button
+                        onClick={() => approveProfile(p.id)}
+                        className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-semibold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-1.5 shadow-sm"
+                      >
+                        <Check className="w-4 h-4" /> Approve
+                      </button>
+                    )}
                     <button
                       onClick={() => banProfile(p.id)}
                       className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-1.5 shadow-sm"
                     >
-                      <Ban className="w-4 h-4" /> Reject & Ban
+                      <Ban className="w-4 h-4" /> Ban User
                     </button>
                   </div>
                 </div>
