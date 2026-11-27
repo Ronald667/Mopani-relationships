@@ -499,7 +499,18 @@ export function Chat({
       if (error) {
         console.warn('Supabase message insert notice:', error.message)
       } else if (data) {
-        appendLocalThreadMessage(data as PrivateMessage)
+        const persisted = data as PrivateMessage
+        appendLocalThreadMessage(persisted)
+        void fetch('/api/chat/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message_id: persisted.id,
+            sender_id: senderProfileId,
+            receiver_id: activeChatId,
+            content: messageContent,
+          }),
+        }).catch(() => {})
       }
     } finally {
       setSending(false)

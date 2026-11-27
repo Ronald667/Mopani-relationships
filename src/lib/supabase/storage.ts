@@ -1,4 +1,8 @@
-import { supabase, SUPABASE_STORAGE_BUCKET } from './client'
+import {
+  supabase,
+  SUPABASE_PROFILES_BUCKET,
+  SUPABASE_STORAGE_BUCKET,
+} from './client'
 
 export interface UploadedFileResult {
   url: string
@@ -62,36 +66,47 @@ export function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([buffer], { type: mime })
 }
 
-export async function uploadFileToSupabase(
+async function uploadBlobToBucket(
+  bucketName: string,
+  storagePath: string,
   file: File | Blob,
-  folder: 'profiles' | 'chat' | 'shared',
-  customFileName?: string,
-  subPath?: string
+  originalName: string,
+  upsert = false
 ): Promise<UploadedFileResult> {
-  const originalName =
-    customFileName ||
-    (file instanceof File ? file.name : undefined) ||
-    (file.type.startsWith('image/') ? 'photo.jpg' : 'attachment')
-  const safeName = sanitizeFileName(originalName)
-  const prefix = subPath ? `${folder}/${subPath}` : folder
-  const storagePath = `${prefix}/${Date.now()}-${randomSuffix()}-${safeName}`
   const contentType = file.type || 'application/octet-stream'
 
   try {
-    const { data, error } = await supabase.storage
-      .from(SUPABASE_STORAGE_BUCKET)
+    let { data, error } = await supabase.storage
+      .from(bucketName)
       .upload(storagePath, file, {
         cacheControl: '3600',
-        upsert: false,
+        upsert,
         contentType,
       })
+
+    if (error && /bucket not found/i.test(error.message || '')) {
+      try {
+        await fetch('/api/storage/ensure-bucket', { method: 'POST' })
+        const retry = await supabase.storage
+          .from(bucketName)
+          .upload(storagePath, file, {
+            cacheControl: '3600',
+            upsert,
+            contentType,
+          })
+        data = retry.data
+        error = retry.error
+      } catch {
+        // fall through to error handler
+      }
+    }
 
     if (error || !data) {
       throw new Error(error?.message || 'Supabase Storage upload failed')
     }
 
     const { data: urlData } = supabase.storage
-      .from(SUPABASE_STORAGE_BUCKET)
+      .from(bucketName)
       .getPublicUrl(data.path)
 
     return {
@@ -103,7 +118,6 @@ export async function uploadFileToSupabase(
       storedInSupabase: true,
     }
   } catch (err: any) {
-    // Fallback to Data URL for smaller files if Storage bucket/key is not ready yet
     let fallbackUrl = ''
     if (file.size <= 2 * 1024 * 1024) {
       try {
@@ -125,6 +139,44 @@ export async function uploadFileToSupabase(
   }
 }
 
+export async function uploadProfilePhotoBlob(
+  blob: Blob,
+  profileId: string
+): Promise<UploadedFileResult> {
+  const safeId = sanitizeFileName(profileId || 'profile')
+  const fileName = `${safeId}-${Date.now()}-${randomSuffix()}.jpg`
+  const storagePath = `${safeId}/${fileName}`
+  return uploadBlobToBucket(SUPABASE_PROFILES_BUCKET, storagePath, blob, fileName, true)
+}
+
+export async function uploadFileToSupabase(
+  file: File | Blob,
+  folder: 'profiles' | 'chat' | 'shared',
+  customFileName?: string,
+  subPath?: string
+): Promise<UploadedFileResult> {
+  const originalName =
+    customFileName ||
+    (file instanceof File ? file.name : undefined) ||
+    (file.type.startsWith('image/') ? 'photo.jpg' : 'attachment')
+  const safeName = sanitizeFileName(originalName)
+  const contentType = file.type || 'application/octet-stream'
+  const fileToUpload =
+    file.type === contentType ? file : new Blob([file], { type: contentType })
+
+  if (folder === 'profiles') {
+    const profileKey = sanitizeFileName(
+      (subPath || originalName.replace(/\.[^/.]+$/, '') || 'profile')
+    )
+    const storagePath = `${profileKey}/${Date.now()}-${randomSuffix()}-${safeName}`
+    return uploadBlobToBucket(SUPABASE_PROFILES_BUCKET, storagePath, fileToUpload, originalName, true)
+  }
+
+  const prefix = subPath ? `${folder}/${subPath}` : folder
+  const storagePath = `${prefix}/${Date.now()}-${randomSuffix()}-${safeName}`
+  return uploadBlobToBucket(SUPABASE_STORAGE_BUCKET, storagePath, fileToUpload, originalName, false)
+}
+
 export async function uploadDataUrlToSupabase(
   dataUrl: string,
   folder: 'profiles' | 'chat' | 'shared',
@@ -142,7 +194,10 @@ export async function uploadDataUrlToSupabase(
   }
 
   const blob = dataUrlToBlob(dataUrl)
-  const result = await uploadFileToSupabase(blob, folder, fileName)
+  const result =
+    folder === 'profiles'
+      ? await uploadProfilePhotoBlob(blob, fileName.replace(/\.[^/.]+$/, ''))
+      : await uploadFileToSupabase(blob, folder, fileName)
   if (!result.url) {
     return { ...result, url: dataUrl }
   }
@@ -151,17 +206,25 @@ export async function uploadDataUrlToSupabase(
 
 export async function deleteStorageFileByUrl(publicUrl: string): Promise<void> {
   if (!publicUrl) return
-  const marker = `/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/`
-  const idx = publicUrl.indexOf(marker)
-  if (idx === -1) return
 
-  const storagePath = decodeURIComponent(publicUrl.slice(idx + marker.length).split('?')[0])
-  if (!storagePath) return
+  const candidateBuckets = Array.from(
+    new Set([SUPABASE_PROFILES_BUCKET, SUPABASE_STORAGE_BUCKET])
+  )
 
-  try {
-    await supabase.storage.from(SUPABASE_STORAGE_BUCKET).remove([storagePath])
-  } catch {
-    // best-effort cleanup
+  for (const bucket of candidateBuckets) {
+    const marker = `/storage/v1/object/public/${bucket}/`
+    const idx = publicUrl.indexOf(marker)
+    if (idx === -1) continue
+
+    const storagePath = decodeURIComponent(publicUrl.slice(idx + marker.length).split('?')[0])
+    if (!storagePath) return
+
+    try {
+      await supabase.storage.from(bucket).remove([storagePath])
+    } catch {
+      // best-effort cleanup
+    }
+    return
   }
 }
 

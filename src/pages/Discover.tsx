@@ -1,15 +1,31 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { ReportModal } from '@/components/ReportModal'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { Logo } from '@/components/Logo'
+import { DistanceMapPanel } from '@/components/DistanceMapPanel'
+import { useLocationDistances } from '@/hooks/useLocationDistances'
+import { formatDistanceKm, formatTravelDuration } from '@/lib/googleMaps'
 import {
   Profile,
   fetchApprovedProfiles,
+  getActiveProfile,
   getActiveProfileId,
   normalizePhone,
 } from '@/utils/profileStorage'
-import { MapPin, MessageCircle, ShieldCheck, Heart, Sparkles, Filter, Search, Lock, RefreshCw } from 'lucide-react'
+import {
+  MapPin,
+  MessageCircle,
+  ShieldCheck,
+  Heart,
+  Sparkles,
+  Filter,
+  Search,
+  Lock,
+  RefreshCw,
+  Compass,
+  Route as RouteIcon,
+} from 'lucide-react'
 
 const VILLAGES: Record<string, string[]> = {
   "Maruleng": ["Lorraine", "Sekororo", "Trichardtsdal", "The Oaks", "Hoedspruit", "Makhutsi"],
@@ -29,14 +45,35 @@ export function Discover({
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [loading, setLoading] = useState(true)
   const [activeProfileId] = useState(() => getActiveProfileId())
+  const activeProfile = useMemo(() => getActiveProfile(), [activeProfileId])
+
   const [selectedMunicipality, setSelectedMunicipality] = useState('')
   const [selectedVillage, setSelectedVillage] = useState('')
   const [selectedIntention, setSelectedIntention] = useState('')
   const [selectedGender, setSelectedGender] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
 
+  const [maxDistanceKm, setMaxDistanceKm] = useState<number | null>(null)
+  const [sortByDistance, setSortByDistance] = useState(false)
+  const [focusedProfileId, setFocusedProfileId] = useState<string | null>(null)
+  const mapSectionRef = useRef<HTMLDivElement | null>(null)
+
   const [reportModalOpen, setReportModalOpen] = useState(false)
   const [reportingProfile, setReportingProfile] = useState<{ id: string; name: string } | null>(null)
+
+  const {
+    mapsEnabled,
+    origin,
+    profileCoords,
+    distances,
+    loadingDistances,
+    locatingGps,
+    locationError,
+    requestGpsLocation,
+    setCustomOrigin,
+    clearOriginOverride,
+    updateSingleProfileDistance,
+  } = useLocationDistances(profiles, activeProfile)
 
   const fetchProfiles = useCallback(async () => {
     setLoading(true)
@@ -67,20 +104,55 @@ export function Discover({
     }
   }, [fetchProfiles])
 
-  const filteredProfiles = profiles.filter((p) => {
-    if (selectedMunicipality && p.municipality !== selectedMunicipality) return false
-    if (selectedVillage && p.village !== selectedVillage) return false
-    if (selectedIntention && p.intention !== selectedIntention) return false
-    if (selectedGender && p.gender !== selectedGender) return false
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase()
-      const matchName = p.full_name?.toLowerCase().includes(q)
-      const matchBio = p.bio?.toLowerCase().includes(q)
-      const matchVillage = p.village?.toLowerCase().includes(q)
-      if (!matchName && !matchBio && !matchVillage) return false
+  const filteredProfiles = useMemo(() => {
+    const matched = profiles.filter((p) => {
+      if (selectedMunicipality && p.municipality !== selectedMunicipality) return false
+      if (selectedVillage && p.village !== selectedVillage) return false
+      if (selectedIntention && p.intention !== selectedIntention) return false
+      if (selectedGender && p.gender !== selectedGender) return false
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase()
+        const matchName = p.full_name?.toLowerCase().includes(q)
+        const matchBio = p.bio?.toLowerCase().includes(q)
+        const matchVillage = p.village?.toLowerCase().includes(q)
+        if (!matchName && !matchBio && !matchVillage) return false
+      }
+      if (maxDistanceKm !== null) {
+        const dist = distances[p.id]
+        if (!dist || dist.distanceMeters > maxDistanceKm * 1000) return false
+      }
+      return true
+    })
+
+    if (!sortByDistance) {
+      return matched
     }
-    return true
-  })
+
+    return [...matched].sort((a, b) => {
+      const distA = distances[a.id]?.distanceMeters ?? Number.POSITIVE_INFINITY
+      const distB = distances[b.id]?.distanceMeters ?? Number.POSITIVE_INFINITY
+      return distA - distB
+    })
+  }, [
+    profiles,
+    selectedMunicipality,
+    selectedVillage,
+    selectedIntention,
+    selectedGender,
+    searchQuery,
+    maxDistanceKm,
+    sortByDistance,
+    distances,
+  ])
+
+  const handleFocusHandled = useCallback(() => {
+    setFocusedProfileId(null)
+  }, [])
+
+  const handleFocusOnMap = (profileId: string) => {
+    setFocusedProfileId(profileId)
+    mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   const openWhatsApp = (whatsappNumber: string, name: string) => {
     const cleanNum = normalizePhone(whatsappNumber)
@@ -88,6 +160,16 @@ export function Discover({
     const message = encodeURIComponent(`Hi ${name}, I saw your profile on Mopani Singles-v2. I would love to connect!`)
     window.open(`https://wa.me/${cleanNum}?text=${message}`, '_blank')
   }
+
+  const hasActiveFilters = Boolean(
+    selectedMunicipality ||
+      selectedVillage ||
+      selectedIntention ||
+      selectedGender ||
+      searchQuery ||
+      maxDistanceKm !== null ||
+      sortByDistance
+  )
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -120,13 +202,37 @@ export function Discover({
         </div>
       </div>
 
+      <div ref={mapSectionRef} className="scroll-mt-20">
+        <DistanceMapPanel
+          mapsEnabled={mapsEnabled}
+          profiles={filteredProfiles}
+          origin={origin}
+          profileCoords={profileCoords}
+          distances={distances}
+          loadingDistances={loadingDistances}
+          locatingGps={locatingGps}
+          locationError={locationError}
+          maxDistanceKm={maxDistanceKm}
+          sortByDistance={sortByDistance}
+          focusedProfileId={focusedProfileId}
+          onMaxDistanceChange={setMaxDistanceKm}
+          onSortByDistanceChange={setSortByDistance}
+          onRequestGps={requestGpsLocation}
+          onSelectCustomOrigin={setCustomOrigin}
+          onClearOriginOverride={clearOriginOverride}
+          onFocusHandled={handleFocusHandled}
+          onRouteComputed={updateSingleProfileDistance}
+          onStartChat={onStartChat}
+        />
+      </div>
+
       <div className="bg-white rounded-2xl p-5 shadow-md border border-rose-100 mb-8 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-bold text-gray-900 flex items-center gap-2">
             <Filter className="w-4 h-4 text-rose-600" /> Filter Singles ({filteredProfiles.length})
           </h2>
           <div className="flex items-center gap-3">
-            {(selectedMunicipality || selectedVillage || selectedIntention || selectedGender || searchQuery) && (
+            {hasActiveFilters && (
               <button
                 onClick={() => {
                   setSelectedMunicipality('')
@@ -134,6 +240,8 @@ export function Discover({
                   setSelectedIntention('')
                   setSelectedGender('')
                   setSearchQuery('')
+                  setMaxDistanceKm(null)
+                  setSortByDistance(false)
                 }}
                 className="text-xs text-rose-700 hover:underline font-semibold"
               >
@@ -236,6 +344,9 @@ export function Discover({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {filteredProfiles.map((p) => {
             const isActiveSelf = p.id === activeProfileId
+            const distanceInfo = distances[p.id]
+            const canShowRoute = mapsEnabled && Boolean(profileCoords[p.id])
+
             return (
               <div
                 key={p.id}
@@ -267,14 +378,26 @@ export function Discover({
                       {p.full_name}, {p.age}
                     </h3>
                     <p className="text-xs text-rose-200 flex items-center gap-1 mt-0.5">
-                      <MapPin className="w-3.5 h-3.5" /> {p.village}, {p.municipality}
+                      <MapPin className="w-3.5 h-3.5 shrink-0" /> {p.village}, {p.municipality}
                     </p>
                   </div>
                 </div>
 
                 <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
-                  <div>
-                    <div className="flex items-center gap-2 mb-2 text-xs text-gray-500 font-medium">
+                  <div className="space-y-2">
+                    {distanceInfo && (
+                      <div className="bg-amber-50 border border-amber-200 text-amber-950 rounded-lg px-2.5 py-1.5 text-xs font-semibold flex items-center gap-1.5">
+                        <Compass className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+                        <span>
+                          {formatDistanceKm(distanceInfo.distanceMeters)} away
+                          {distanceInfo.durationSeconds
+                            ? ` • ${formatTravelDuration(distanceInfo.durationSeconds)}`
+                            : ' (approx.)'}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 text-xs text-gray-500 font-medium">
                       <span className="bg-gray-100 px-2 py-0.5 rounded">Language: {p.language || 'Sepedi'}</span>
                       <span className="bg-rose-50 text-rose-700 px-2 py-0.5 rounded font-semibold">
                         {p.gender}
@@ -309,7 +432,19 @@ export function Discover({
                       </div>
                     )}
 
-                    <div className="flex justify-end">
+                    <div className="flex items-center justify-between pt-0.5">
+                      {!isActiveSelf && canShowRoute ? (
+                        <button
+                          type="button"
+                          onClick={() => handleFocusOnMap(p.id)}
+                          className="text-xs text-rose-700 hover:text-rose-900 font-semibold flex items-center gap-1 transition"
+                        >
+                          <RouteIcon className="w-3.5 h-3.5" /> Map & Route
+                        </button>
+                      ) : (
+                        <span />
+                      )}
+
                       <button
                         onClick={() => {
                           setReportingProfile({ id: p.id, name: p.full_name })

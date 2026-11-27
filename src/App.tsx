@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { APIProvider } from '@vis.gl/react-google-maps'
 import { Navbar } from './components/Navbar'
 import { Discover } from './pages/Discover'
 import { Matches } from './pages/Matches'
@@ -10,18 +11,46 @@ import { Privacy } from './pages/Privacy'
 import { DeleteData } from './pages/DeleteData'
 import { Admin } from './pages/Admin'
 import { Logo } from './components/Logo'
+import { getGoogleMapsApiKey } from './lib/googleMaps'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('discover')
   const [selectedChatRecipientId, setSelectedChatRecipientId] = useState<string>('')
+  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState<boolean>(false)
+  const mapsApiKey = getGoogleMapsApiKey()
+
+  useEffect(() => {
+    const handleQuotaExceeded = () => setMapsQuotaExceeded(true)
+    window.addEventListener('gmp-quota-exceeded', handleQuotaExceeded)
+    return () => {
+      window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded)
+    }
+  }, [])
 
   const handleStartPrivateChat = (profileId: string) => {
     setSelectedChatRecipientId(profileId)
     setActiveTab('chat')
   }
 
-  return (
+  const content = (
     <div className="min-h-screen bg-gradient-to-br from-rose-50/60 via-gray-50 to-amber-50/40 flex flex-col font-sans text-gray-800">
+      {mapsQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
+
       <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
 
       <main className="flex-1">
@@ -72,7 +101,30 @@ export default function App() {
             <Logo className="w-8 h-8" />
             <span className="font-bold text-gray-800">Mopani Singles-v2</span>
           </div>
-          <p>© {new Date().getFullYear()} Mopani Singles-v2 • Limpopo Romance & Community Safety. POPIA Compliant.</p>
+          <div className="space-y-1">
+            <p>© {new Date().getFullYear()} Mopani Singles-v2 • Limpopo Romance & Community Safety. POPIA Compliant.</p>
+            <p className="text-[11px] text-gray-400">
+              Location & distance features use Google Maps (
+              <a
+                href="https://maps.google.com/help/terms_maps/?utm_campaign=gmp_mcp_codeassist_v1_aistudio"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-gray-600"
+              >
+                Google Maps Terms
+              </a>
+              {' • '}
+              <a
+                href="https://policies.google.com/privacy?utm_campaign=gmp_mcp_codeassist_v1_aistudio"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-gray-600"
+              >
+                Google Privacy Policy
+              </a>
+              ).
+            </p>
+          </div>
           <div className="flex gap-4">
             <button onClick={() => setActiveTab('matches')} className="hover:text-rose-700 transition">
               Smart Matches
@@ -93,5 +145,20 @@ export default function App() {
         </div>
       </footer>
     </div>
+  )
+
+  if (!mapsApiKey) {
+    return content
+  }
+
+  return (
+    <APIProvider
+      apiKey={mapsApiKey}
+      language="en"
+      region="ZA"
+      libraries={['marker', 'routes', 'places', 'geometry']}
+    >
+      {content}
+    </APIProvider>
   )
 }

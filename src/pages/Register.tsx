@@ -1,7 +1,10 @@
 import React, { useState } from 'react'
 import { ImageCropperModal } from '@/components/ImageCropperModal'
 import { BackButton } from '@/components/BackButton'
-import { uploadDataUrlToSupabase, uploadFileToSupabase } from '@/lib/supabase/storage'
+import {
+  uploadDataUrlToSupabase,
+  uploadProfilePhotoBlob,
+} from '@/lib/supabase/storage'
 import {
   Profile,
   addMyProfile,
@@ -29,6 +32,8 @@ const initialFormState = {
   intention: 'Marriage',
   bio: '',
   whatsapp: '',
+  email: '',
+  email_notifications: true,
   photo_url: '',
   consent_popia: false,
 }
@@ -83,13 +88,18 @@ export function Register({
       return
     }
 
+    if (form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      setErrorMsg('Please enter a valid email address for notifications, or leave it blank.')
+      return
+    }
+
     setSubmitting(true)
     try {
       const profileId = generateProfileId()
 
-      // Upload profile photo file to Supabase Storage
+      // Upload cropped square (max 500x500) photo blob to Supabase 'profiles' bucket
       const uploadResult = photoBlob
-        ? await uploadFileToSupabase(photoBlob, 'profiles', `${profileId}.jpg`)
+        ? await uploadProfilePhotoBlob(photoBlob, profileId)
         : await uploadDataUrlToSupabase(form.photo_url, 'profiles', `${profileId}.jpg`)
 
       const resolvedPhotoUrl = uploadResult.url || form.photo_url
@@ -105,6 +115,8 @@ export function Register({
         intention: form.intention,
         bio: form.bio.trim(),
         whatsapp: form.whatsapp.trim(),
+        email: form.email.trim().toLowerCase(),
+        email_notifications: form.email_notifications,
         photo_url: resolvedPhotoUrl,
         consent_popia: form.consent_popia,
         is_approved: true,
@@ -231,7 +243,9 @@ export function Register({
               </div>
             )}
             <p className="text-sm font-bold text-gray-800">Profile Picture (Required)</p>
-            <p className="text-xs text-gray-500 mb-3">Uploaded directly to Supabase Storage for other app users to view</p>
+            <p className="text-xs text-gray-500 mb-3">
+              Cropped square (max 500×500 px) and uploaded to Supabase &apos;profiles&apos; bucket
+            </p>
             <button
               type="button"
               onClick={() => setCropperOpen(true)}
@@ -373,6 +387,28 @@ export function Register({
               className="w-full border border-gray-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
             />
             <p className="text-[11px] text-gray-500 mt-1">Your WhatsApp number is kept private and secure. It is only opened when someone clicks WhatsApp Chat on your card.</p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-gray-700 mb-1">
+              Email for New Message Notifications (Private, optional)
+            </label>
+            <input
+              type="email"
+              placeholder="e.g. you@example.com"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              className="w-full border border-gray-300 rounded-xl p-3 text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
+            />
+            <label className="mt-2 flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.email_notifications}
+                onChange={(e) => setForm({ ...form, email_notifications: e.target.checked })}
+                className="w-4 h-4 text-rose-600 rounded accent-rose-600"
+              />
+              <span>Send me an email alert whenever I receive a new private chat message</span>
+            </label>
           </div>
 
           <div className="bg-rose-50/70 p-4 rounded-2xl border border-rose-200 flex items-start gap-3">

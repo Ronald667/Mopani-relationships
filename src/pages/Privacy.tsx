@@ -38,6 +38,29 @@ export function Privacy({ onBack }: { onBack: () => void }) {
           <p>
             Profiles inactive for over 12 months are automatically archived and purged. We do not sell, rent, or share your personal data with third-party marketers.
           </p>
+
+          <h3 className="font-bold text-gray-900 pt-2">Google Maps &amp; Distance Discovery</h3>
+          <p>
+            Mopani Singles-v2 integrates Google Maps Platform features to display approximate distances, travel times, and interactive maps based on village/municipality locations. Sharing your device&apos;s live GPS location is strictly optional, requires your explicit permission, and can be cleared anytime in Discover. Use of Google Maps features is subject to the{' '}
+            <a
+              href="https://maps.google.com/help/terms_maps/?utm_campaign=gmp_mcp_codeassist_v1_aistudio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-rose-700 underline font-medium"
+            >
+              Google Maps/Google Earth Additional Terms of Service
+            </a>{' '}
+            and{' '}
+            <a
+              href="https://policies.google.com/privacy?utm_campaign=gmp_mcp_codeassist_v1_aistudio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-rose-700 underline font-medium"
+            >
+              Google Privacy Policy
+            </a>
+            .
+          </p>
         </div>
       </div>
     </div>

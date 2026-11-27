@@ -11,6 +11,8 @@ export interface Profile {
   intention: string
   bio: string
   whatsapp: string
+  email?: string
+  email_notifications?: boolean
   photo_url: string
   is_verified?: boolean
   is_approved?: boolean
@@ -74,6 +76,8 @@ export function toSupabaseProfilePayload(profile: Profile) {
     intention: profile.intention,
     bio: profile.bio,
     whatsapp: profile.whatsapp,
+    email: (profile.email || '').trim().toLowerCase(),
+    email_notifications: profile.email_notifications ?? true,
     photo_url: profile.photo_url,
     is_approved: profile.is_approved ?? true,
     is_banned: profile.is_banned ?? false,
@@ -88,17 +92,38 @@ export async function saveProfileToSupabase(profile: Profile): Promise<{
 }> {
   const payload = toSupabaseProfilePayload(profile)
   try {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('profiles')
       .upsert([payload], { onConflict: 'id' })
       .select()
       .single()
 
+    if (
+      error &&
+      /email|schema cache|pgrst204|column/i.test(error.message || '')
+    ) {
+      const { email: _ignoredEmail, email_notifications: _ignoredOptIn, ...legacyPayload } = payload
+      const retry = await supabase
+        .from('profiles')
+        .upsert([legacyPayload], { onConflict: 'id' })
+        .select()
+        .single()
+      data = retry.data
+      error = retry.error
+    }
+
     if (error) {
       return { profile, syncedToSupabase: false, error: error.message }
     }
+    const merged: Profile = {
+      ...profile,
+      ...(data as Profile),
+      email: (data as Profile)?.email ?? profile.email,
+      email_notifications:
+        (data as Profile)?.email_notifications ?? profile.email_notifications ?? true,
+    }
     return {
-      profile: (data as Profile) || profile,
+      profile: merged,
       syncedToSupabase: true,
     }
   } catch (err: any) {
@@ -110,12 +135,15 @@ export async function saveProfileToSupabase(profile: Profile): Promise<{
   }
 }
 
+const PUBLIC_PROFILE_COLUMNS =
+  'id, full_name, age, gender, municipality, village, language, intention, bio, whatsapp, photo_url, is_approved, is_banned, created_at'
+
 export async function fetchProfileById(id: string): Promise<Profile | null> {
   if (!id) return null
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select(PUBLIC_PROFILE_COLUMNS)
       .eq('id', id)
       .maybeSingle()
 
@@ -262,7 +290,7 @@ export async function fetchApprovedProfiles(): Promise<Profile[]> {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select(PUBLIC_PROFILE_COLUMNS)
       .eq('is_approved', true)
       .eq('is_banned', false)
       .order('created_at', { ascending: false })

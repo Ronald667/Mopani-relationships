@@ -1,15 +1,27 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { calculateCompatibility, MatchResult } from '@/utils/matchingAlgorithm'
 import { BackButton } from '@/components/BackButton'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
+import { useLocationDistances } from '@/hooks/useLocationDistances'
+import { formatDistanceKm, formatTravelDuration } from '@/lib/googleMaps'
 import {
   fetchApprovedProfiles,
   getActiveProfile,
   getActiveProfileId,
   normalizePhone,
 } from '@/utils/profileStorage'
-import { Sparkles, Heart, MapPin, MessageCircle, ShieldCheck, Sliders, Check, Lock } from 'lucide-react'
+import {
+  Sparkles,
+  Heart,
+  MapPin,
+  MessageCircle,
+  ShieldCheck,
+  Sliders,
+  Check,
+  Lock,
+  Compass,
+} from 'lucide-react'
 
 const VILLAGES: Record<string, string[]> = {
   "Maruleng": ["Lorraine", "Sekororo", "Trichardtsdal", "The Oaks", "Hoedspruit", "Makhutsi"],
@@ -28,18 +40,19 @@ export function Matches({
   onGoRegister: () => void
   onBack: () => void
 }) {
-  const [preferences, setPreferences] = useState(() => {
-    const active = getActiveProfile()
-    return {
-      intention: active?.intention || 'Marriage',
-      municipality: active?.municipality || 'Greater Tzaneen',
-      language: active?.language || 'Sepedi',
-      age: active?.age || 27,
-    }
-  })
+  const activeProfile = useMemo(() => getActiveProfile(), [])
+  const [preferences, setPreferences] = useState(() => ({
+    intention: activeProfile?.intention || 'Marriage',
+    municipality: activeProfile?.municipality || 'Greater Tzaneen',
+    language: activeProfile?.language || 'Sepedi',
+    age: activeProfile?.age || 27,
+  }))
 
   const [matches, setMatches] = useState<MatchResult[]>([])
   const [loading, setLoading] = useState(true)
+
+  const matchProfiles = useMemo(() => matches.map((m) => m.profile), [matches])
+  const { mapsEnabled, origin, distances } = useLocationDistances(matchProfiles, activeProfile)
 
   const fetchAndCalculateMatches = useCallback(async () => {
     setLoading(true)
@@ -91,6 +104,12 @@ export function Matches({
           <p className="text-rose-100 text-sm max-w-xl">
             Matches real approved Mopani Singles profiles based on your preferred location, intention, language, and age range.
           </p>
+          {mapsEnabled && origin && (
+            <p className="text-xs text-amber-200 mt-3 flex items-center gap-1.5 font-medium">
+              <Compass className="w-3.5 h-3.5 shrink-0" />
+              Road distances calculated from {origin.label}
+            </p>
+          )}
         </div>
 
         <div className="bg-white/10 backdrop-blur-md p-5 rounded-2xl border border-white/20 w-full md:w-80 space-y-3">
@@ -147,6 +166,8 @@ export function Matches({
           {matches.map((item) => {
             const p = item.profile
             const cleanWa = normalizePhone(p.whatsapp)
+            const distanceInfo = distances[p.id]
+
             return (
               <div key={p.id} className="bg-white rounded-3xl overflow-hidden border border-rose-100 shadow-lg flex flex-col transition hover:scale-[1.01]">
                 <div className="relative h-64 bg-gray-200">
@@ -176,6 +197,18 @@ export function Matches({
 
                 <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
                   <div>
+                    {distanceInfo && (
+                      <div className="bg-amber-50 border border-amber-200 text-amber-950 rounded-lg px-2.5 py-1.5 text-xs font-semibold inline-flex items-center gap-1.5 mb-2.5">
+                        <Compass className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+                        <span>
+                          {formatDistanceKm(distanceInfo.distanceMeters)} away
+                          {distanceInfo.durationSeconds
+                            ? ` • ${formatTravelDuration(distanceInfo.durationSeconds)}`
+                            : ' (approx.)'}
+                        </span>
+                      </div>
+                    )}
+
                     <div className="flex flex-wrap gap-1.5 mb-3">
                       {item.matchReasons.map((reason, idx) => (
                         <span key={idx} className="bg-rose-50 text-rose-700 text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1">

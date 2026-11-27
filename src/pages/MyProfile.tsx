@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase'
 import {
   deleteStorageFileByUrl,
   uploadDataUrlToSupabase,
-  uploadFileToSupabase,
+  uploadProfilePhotoBlob,
 } from '@/lib/supabase/storage'
 import { ImageCropperModal } from '@/components/ImageCropperModal'
 import { BackButton } from '@/components/BackButton'
@@ -52,6 +52,7 @@ export function MyProfile({
   const [selectedId, setSelectedId] = useState<string>('')
   const [isEditing, setIsEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [cropperOpen, setCropperOpen] = useState(false)
   const [pendingPhotoBlob, setPendingPhotoBlob] = useState<Blob | null>(null)
@@ -99,10 +100,62 @@ export function MyProfile({
     setFeedback('Active profile updated for private messaging and smart matching.')
   }
 
-  const handleCropComplete = (croppedBase64: string, blob?: Blob) => {
-    if (!formData) return
-    setFormData({ ...formData, photo_url: croppedBase64 })
-    setPendingPhotoBlob(blob || null)
+  const handleCropComplete = async (croppedBase64: string, blob?: Blob) => {
+    if (isEditing && formData) {
+      setFormData({ ...formData, photo_url: croppedBase64 })
+      setPendingPhotoBlob(blob || null)
+      return
+    }
+
+    if (!selectedProfile) return
+
+    setUploadingPhoto(true)
+    setFeedback('')
+    try {
+      const oldPhotoUrl = selectedProfile.photo_url
+      const uploadRes = blob
+        ? await uploadProfilePhotoBlob(blob, selectedProfile.id)
+        : await uploadDataUrlToSupabase(croppedBase64, 'profiles', `${selectedProfile.id}.jpg`)
+
+      const nextPhotoUrl = uploadRes.url || croppedBase64
+
+      if (uploadRes.storedInSupabase && oldPhotoUrl && oldPhotoUrl !== nextPhotoUrl) {
+        await deleteStorageFileByUrl(oldPhotoUrl)
+      }
+
+      const nextProfile: Profile = {
+        ...selectedProfile,
+        photo_url: nextPhotoUrl,
+      }
+
+      const { data: updatedRow, error: updateErr } = await supabase
+        .from('profiles')
+        .update({ photo_url: nextPhotoUrl })
+        .eq('id', selectedProfile.id)
+        .select()
+        .maybeSingle()
+
+      let syncedProfile = (updatedRow as Profile) || nextProfile
+      if (updateErr || !updatedRow) {
+        const res = await saveProfileToSupabase(nextProfile)
+        syncedProfile = res.profile
+      }
+
+      const updated = updateMyProfile(syncedProfile)
+      setProfiles(updated)
+      setFormData(syncedProfile)
+      setPendingPhotoBlob(null)
+
+      if (uploadRes.storedInSupabase) {
+        setFeedback('Profile photo uploaded to Supabase profiles bucket and profile updated!')
+      } else {
+        setFeedback(
+          `Photo cropped and saved locally (${uploadRes.error || 'Supabase profiles bucket not ready yet'}).`
+        )
+      }
+    } finally {
+      setUploadingPhoto(false)
+    }
   }
 
   const handleSaveEdit = async (e: React.FormEvent) => {
@@ -116,7 +169,7 @@ export function MyProfile({
 
       if (pendingPhotoBlob || (nextPhotoUrl && nextPhotoUrl.startsWith('data:'))) {
         const uploadRes = pendingPhotoBlob
-          ? await uploadFileToSupabase(pendingPhotoBlob, 'profiles', `${formData.id}.jpg`)
+          ? await uploadProfilePhotoBlob(pendingPhotoBlob, formData.id)
           : await uploadDataUrlToSupabase(nextPhotoUrl, 'profiles', `${formData.id}.jpg`)
 
         if (uploadRes.url) {
@@ -302,12 +355,25 @@ export function MyProfile({
 
         <div className="px-6 pb-8 pt-0 relative">
           <div className="-mt-16 mb-4 flex justify-between items-end">
-            <ProfileAvatar
-              src={selectedProfile.photo_url}
-              name={selectedProfile.full_name}
-              className="w-32 h-32 rounded-full border-4 border-white shadow-lg bg-white"
-              textSizeClass="text-2xl"
-            />
+            <div className="relative">
+              <ProfileAvatar
+                src={selectedProfile.photo_url}
+                name={selectedProfile.full_name}
+                className="w-32 h-32 rounded-full border-4 border-white shadow-lg bg-white"
+                textSizeClass="text-2xl"
+              />
+              {!isEditing && (
+                <button
+                  type="button"
+                  disabled={uploadingPhoto}
+                  onClick={() => setCropperOpen(true)}
+                  title="Upload & crop new profile photo"
+                  className="absolute bottom-1 right-1 bg-rose-700 hover:bg-rose-800 disabled:opacity-60 text-white p-2 rounded-full border-2 border-white shadow-md transition"
+                >
+                  <Camera className="w-4 h-4" />
+                </button>
+              )}
+            </div>
             <span
               className={`text-xs font-bold px-3 py-1.5 rounded-full ${
                 selectedProfile.is_banned
@@ -351,9 +417,21 @@ export function MyProfile({
               </div>
 
               <div className="bg-rose-50/60 p-4 rounded-2xl border border-rose-100 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-xs font-bold text-rose-900">Private WhatsApp Number</h3>
-                  <p className="text-xs text-gray-600 font-mono mt-0.5">{selectedProfile.whatsapp}</p>
+                <div className="space-y-1.5">
+                  <div>
+                    <h3 className="text-xs font-bold text-rose-900">Private WhatsApp Number</h3>
+                    <p className="text-xs text-gray-600 font-mono mt-0.5">{selectedProfile.whatsapp}</p>
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-rose-900">Private Message Email Alerts</h3>
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      {selectedProfile.email
+                        ? `${selectedProfile.email} • ${
+                            selectedProfile.email_notifications === false ? 'Alerts paused' : 'Alerts enabled'
+                          }`
+                        : 'Not set (edit profile to add email alerts)'}
+                    </p>
+                  </div>
                 </div>
 
                 {!confirmingDelete ? (
@@ -494,6 +572,30 @@ export function MyProfile({
                   onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
                   className="w-full border rounded-xl p-2.5 text-sm"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Private Email for New Message Alerts (Optional)
+                </label>
+                <input
+                  type="email"
+                  placeholder="e.g. you@example.com"
+                  value={formData.email || ''}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  className="w-full border rounded-xl p-2.5 text-sm"
+                />
+                <label className="mt-2 flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.email_notifications !== false}
+                    onChange={(e) =>
+                      setFormData({ ...formData, email_notifications: e.target.checked })
+                    }
+                    className="w-4 h-4 text-rose-600 rounded accent-rose-600"
+                  />
+                  <span>Email me when a user sends me a new private message</span>
+                </label>
               </div>
 
               <div>
