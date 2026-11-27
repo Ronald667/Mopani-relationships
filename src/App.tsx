@@ -14,7 +14,8 @@ import { Logo } from './components/Logo'
 import { SupabaseDiagnosticAlert } from './components/SupabaseDiagnosticAlert'
 import { getGoogleMapsApiKey } from './lib/googleMaps'
 import { consumeEmailVerificationFromUrl } from './lib/supabase'
-import { confirmBoostCheckout } from './utils/profileStorage'
+import { confirmBoostCheckout, restoreProfileByAuthToken } from './utils/profileStorage'
+import { PENDING_RESTORE_SESSION_KEY } from './components/RestoreProfileModal'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('discover')
@@ -38,8 +39,31 @@ export default function App() {
 
   useEffect(() => {
     let active = true
-    void consumeEmailVerificationFromUrl().then((res) => {
+    void consumeEmailVerificationFromUrl().then(async (res) => {
       if (!active || !res) return
+      let pendingRestore = false
+      let hasDraft = false
+      try {
+        pendingRestore = sessionStorage.getItem(PENDING_RESTORE_SESSION_KEY) === '1'
+        hasDraft = Boolean(sessionStorage.getItem('mopani_pending_registration_draft'))
+        sessionStorage.removeItem(PENDING_RESTORE_SESSION_KEY)
+      } catch {
+        // ignore storage errors
+      }
+
+      if (res.verified && res.accessToken && (pendingRestore || !hasDraft)) {
+        const restored = await restoreProfileByAuthToken(res.accessToken)
+        if (!active) return
+        if (restored.ok && restored.profile) {
+          setBoostBanner({
+            ok: true,
+            text: `Welcome back, ${restored.profile.full_name}! Your profile has been restored on this device.`,
+          })
+          setActiveTab('myprofile')
+          return
+        }
+      }
+
       setAuthLinkStatus({ verified: res.verified, email: res.email, error: res.error })
       setActiveTab('register')
     })

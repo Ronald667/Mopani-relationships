@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { ImageCropperModal } from '@/components/ImageCropperModal'
 import { BackButton } from '@/components/BackButton'
 import { SupabaseDiagnosticAlert } from '@/components/SupabaseDiagnosticAlert'
+import { RestoreProfileModal } from '@/components/RestoreProfileModal'
 import {
   getLatestVerifiedEmailSession,
   getVerifiedAuthToken,
@@ -29,6 +30,7 @@ import {
   RefreshCw,
   ShieldCheck,
   UserPlus,
+  KeyRound,
 } from 'lucide-react'
 
 const VILLAGES: Record<string, string[]> = {
@@ -115,6 +117,7 @@ export function Register({
   const [infoMsg, setInfoMsg] = useState('')
   const [syncNotice, setSyncNotice] = useState('')
   const [showDiagnostics, setShowDiagnostics] = useState(false)
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false)
 
   useEffect(() => {
     if (cooldown <= 0) return
@@ -463,7 +466,14 @@ export function Register({
             </span>
           </div>
 
-          <div className="mt-3">
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-4">
+            <button
+              type="button"
+              onClick={() => setRestoreModalOpen(true)}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-700 hover:text-rose-900 underline transition"
+            >
+              <KeyRound className="w-3.5 h-3.5" /> Already have a profile? Sign in with Email
+            </button>
             <button
               type="button"
               onClick={() => setShowDiagnostics((prev) => !prev)}
@@ -791,6 +801,24 @@ export function Register({
         isOpen={cropperOpen}
         onClose={() => setCropperOpen(false)}
         onCropComplete={handleCropComplete}
+      />
+
+      <RestoreProfileModal
+        isOpen={restoreModalOpen}
+        initialEmail={form.email}
+        onClose={() => setRestoreModalOpen(false)}
+        onRestored={(restoredProfile) => {
+          setExistingProfile(restoredProfile)
+          setRestoreModalOpen(false)
+          onGoMyProfile()
+        }}
+        onNeedsRegistration={(verifiedEmail) => {
+          setForm((prev) => ({ ...prev, email: verifiedEmail }))
+          setInfoMsg(
+            `Email ${verifiedEmail} is verified! Complete your profile details below to publish.`
+          )
+          setRestoreModalOpen(false)
+        }}
       />
     </div>
   )

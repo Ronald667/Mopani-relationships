@@ -823,6 +823,7 @@ export async function createBoostCheckout(params: {
         profileId: params.profileId,
         gateway: params.gateway,
         paymentMethod: params.paymentMethod || 'card',
+        email: params.email || '',
       }),
     })
     const json = (await res.json().catch(() => ({}))) as {
@@ -1089,6 +1090,61 @@ export async function syncMyProfilesStatus(): Promise<Profile[]> {
 
   saveMyProfiles(synced)
   return synced
+}
+
+export async function restoreProfileByAuthToken(accessToken: string): Promise<{
+  ok: boolean
+  profile: Profile | null
+  email?: string
+  authUserId?: string
+  error?: string
+}> {
+  const cleanToken = (accessToken || '').trim()
+  if (!cleanToken) {
+    return { ok: false, profile: null, error: 'Verification token is required.' }
+  }
+
+  try {
+    const res = await fetch('/api/profiles/restore', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cleanToken}`,
+      },
+    })
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean
+      profile?: Profile | null
+      email?: string
+      authUserId?: string
+      error?: string
+    }
+    if (!res.ok || !json.ok) {
+      return {
+        ok: false,
+        profile: null,
+        error: json.error || 'Could not restore your profile right now.',
+      }
+    }
+    if (json.profile) {
+      addMyProfile(json.profile)
+      setActiveProfileId(json.profile.id)
+      upsertLocalProfile(json.profile)
+      return { ok: true, profile: json.profile }
+    }
+    return {
+      ok: true,
+      profile: null,
+      email: json.email,
+      authUserId: json.authUserId,
+    }
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      profile: null,
+      error: err instanceof Error ? err.message : 'Unable to restore profile right now.',
+    }
+  }
 }
 
 export async function deleteProfileOnSupabase(

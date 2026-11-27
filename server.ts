@@ -486,7 +486,14 @@ function isAllowedPhotoUrl(value: string): boolean {
 
 async function startServer() {
   const app = express()
-  app.use(express.json({ limit: '5mb' }))
+  app.use(
+    express.json({
+      limit: '5mb',
+      verify: (req, _res, buf) => {
+        ;(req as Request & { rawBody?: Buffer }).rawBody = buf
+      },
+    })
+  )
 
   if (adminSupabase) {
     ensureStorageBucket().catch(() => {})
@@ -906,6 +913,109 @@ async function startServer() {
       res.status(500).json({
         ok: false,
         error: err instanceof Error ? err.message : 'Unable to sync profiles',
+      })
+    }
+  })
+
+  app.post('/api/profiles/restore', async (req: Request, res: Response) => {
+    if (!adminSupabase) {
+      res.status(503).json({ ok: false, error: 'Server Supabase client is not configured' })
+      return
+    }
+
+    const bearerToken = extractBearerToken(req)
+    if (!bearerToken) {
+      res.status(401).json({ ok: false, error: 'Verified email authentication is required' })
+      return
+    }
+
+    try {
+      const { data: authData, error: authErr } = await adminSupabase.auth.getUser(bearerToken)
+      const confirmed = Boolean(
+        authData?.user?.email_confirmed_at || authData?.user?.confirmed_at
+      )
+      if (authErr || !authData?.user?.email || !confirmed) {
+        res.status(401).json({
+          ok: false,
+          error: 'Your email verification session is invalid or expired. Please request a new code.',
+        })
+        return
+      }
+
+      const authUserId = authData.user.id
+      const cleanEmail = authData.user.email.trim().toLowerCase()
+      const selfColumns = `${FULL_PUBLIC_PROFILE_COLUMNS}, boost_points, last_boosted_at, email, email_notifications, auth_user_id, verification_requested_at, verification_reviewed_at, verification_note`
+
+      const queryByField = async (mode: 'auth_user_id' | 'email') => {
+        const attempts = [
+          selfColumns,
+          `${PUBLIC_PROFILE_COLUMNS}, email, email_notifications, auth_user_id, verification_requested_at, verification_reviewed_at, verification_note`,
+          `${MID_PUBLIC_PROFILE_COLUMNS}, email, email_notifications, auth_user_id`,
+          `${LEGACY_PUBLIC_PROFILE_COLUMNS}, email`,
+        ]
+        for (const cols of attempts) {
+          const base = adminSupabase!.from('profiles').select(cols)
+          const q =
+            mode === 'auth_user_id'
+              ? base.eq('auth_user_id', authUserId)
+              : base.ilike('email', cleanEmail)
+          const { data, error } = await q.limit(1).maybeSingle()
+          if (!error) {
+            return { data: data as Record<string, unknown> | null, error: null }
+          }
+          if (!/column|schema cache|pgrst204/i.test(error.message || '')) {
+            return { data: null, error }
+          }
+        }
+        return { data: null, error: null }
+      }
+
+      let found = await queryByField('auth_user_id')
+      if (!found.error && !found.data) {
+        found = await queryByField('email')
+      }
+
+      if (found.error) {
+        res.status(400).json({ ok: false, error: found.error.message })
+        return
+      }
+
+      if (!found.data) {
+        res.json({ ok: true, profile: null, email: cleanEmail, authUserId })
+        return
+      }
+
+      if (found.data.is_banned) {
+        res.status(403).json({
+          ok: false,
+          error: 'This profile has been banned and cannot be restored.',
+        })
+        return
+      }
+
+      const rowId = typeof found.data.id === 'string' ? found.data.id : ''
+      if (rowId && (!found.data.auth_user_id || found.data.email_verified !== true)) {
+        try {
+          await adminSupabase
+            .from('profiles')
+            .update({ auth_user_id: authUserId, email_verified: true })
+            .eq('id', rowId)
+          found.data.auth_user_id = authUserId
+          found.data.email_verified = true
+        } catch {
+          // ignore if optional columns aren't migrated
+        }
+      }
+
+      const { verification_selfie_url: _rawSelfie, ...safeRec } = found.data
+      res.json({
+        ok: true,
+        profile: applyBoostOverlayToPublicRow(safeRec),
+      })
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Unable to restore profile',
       })
     }
   })
@@ -2591,6 +2701,123 @@ async function startServer() {
       res.status(500).json({
         ok: false,
         error: err instanceof Error ? err.message : 'Unable to confirm payment checkout',
+      })
+    }
+  })
+
+  app.post('/api/boost/webhook', async (req: Request, res: Response) => {
+    if (!PAYSTACK_SECRET_KEY) {
+      res.status(503).json({ ok: false, error: 'Paystack gateway is not configured on the server' })
+      return
+    }
+
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody
+    const signature = (req.get('x-paystack-signature') || '').trim().toLowerCase()
+    if (!rawBody || !signature) {
+      res.status(401).json({ ok: false, error: 'Missing Paystack webhook signature' })
+      return
+    }
+
+    const expectedSignature = crypto
+      .createHmac('sha512', PAYSTACK_SECRET_KEY)
+      .update(rawBody)
+      .digest('hex')
+      .toLowerCase()
+
+    if (!verifyPlainSecret(signature, expectedSignature)) {
+      res.status(401).json({ ok: false, error: 'Invalid Paystack webhook signature' })
+      return
+    }
+
+    const payload = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      event?: unknown
+      data?: {
+        reference?: unknown
+        status?: unknown
+        amount?: unknown
+        currency?: unknown
+        metadata?: { profileId?: unknown }
+      }
+    }
+
+    if (payload.event !== 'charge.success') {
+      res.json({ ok: true, ignored: true })
+      return
+    }
+
+    const data = payload.data || {}
+    const reference = typeof data.reference === 'string' ? data.reference.trim().slice(0, 128) : ''
+    const status = typeof data.status === 'string' ? data.status.trim().toLowerCase() : ''
+    const amount = typeof data.amount === 'number' ? data.amount : 0
+    const currency = typeof data.currency === 'string' ? data.currency.toUpperCase() : 'ZAR'
+    const profileId =
+      typeof data.metadata?.profileId === 'string' ? data.metadata.profileId.trim() : ''
+
+    if (
+      !reference ||
+      status !== 'success' ||
+      amount < BOOST_PRICE_ZAR_CENTS ||
+      !UUID_RE.test(profileId)
+    ) {
+      res.json({ ok: true, skipped: true })
+      return
+    }
+
+    try {
+      if (redeemedCheckoutRefs.has(reference)) {
+        res.json({ ok: true, alreadyProcessed: true })
+        return
+      }
+      if (adminSupabase) {
+        const existingTx = await adminSupabase
+          .from('boost_transactions')
+          .select('id')
+          .eq('gateway_reference', reference)
+          .maybeSingle()
+        if (!existingTx.error && existingTx.data) {
+          redeemedCheckoutRefs.add(reference)
+          res.json({ ok: true, alreadyProcessed: true })
+          return
+        }
+      }
+
+      const loaded = await loadProfileForBoost(profileId)
+      if (!loaded.profile || loaded.profile.is_banned) {
+        res.json({ ok: true, skipped: true })
+        return
+      }
+
+      const now = Date.now()
+      const existingEndMs = getBoostTimeMs(loaded.profile.boosted_until)
+      const baseStartMs = existingEndMs > now ? existingEndMs : now
+      const nextBoostedUntil = new Date(
+        baseStartMs + BOOST_DURATION_HOURS * 60 * 60 * 1000
+      ).toISOString()
+      const nowIso = new Date(now).toISOString()
+
+      await persistProfileBoostUpdate(
+        profileId,
+        loaded.schemaReady,
+        {
+          boosted_until: nextBoostedUntil,
+          last_boosted_at: nowIso,
+        },
+        {
+          method: 'paystack',
+          amount_cents: amount,
+          currency,
+          points_spent: 0,
+          status: 'completed',
+          gateway_reference: reference,
+          boosted_until: nextBoostedUntil,
+        }
+      )
+
+      res.json({ ok: true, boostedUntil: nextBoostedUntil })
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Unable to process Paystack webhook',
       })
     }
   })

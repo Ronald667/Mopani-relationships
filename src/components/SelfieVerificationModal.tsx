@@ -8,7 +8,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { Profile, requestProfileVerification } from '@/utils/profileStorage'
+import { Profile, requestProfileVerification, saveProfileToSupabase } from '@/utils/profileStorage'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
 
 interface SelfieVerificationModalProps {
@@ -109,7 +109,13 @@ export function SelfieVerificationModal({
     setErrorMsg('')
     setSubmitting(true)
     try {
-      const res = await requestProfileVerification(profile.id, selfieDataUrl)
+      let res = await requestProfileVerification(profile.id, selfieDataUrl)
+      if ((!res.ok || !res.profile) && /profile not found/i.test(res.error || '')) {
+        const synced = await saveProfileToSupabase(profile)
+        if (synced.syncedToSupabase) {
+          res = await requestProfileVerification(profile.id, selfieDataUrl)
+        }
+      }
       if (!res.ok || !res.profile) {
         setErrorMsg(res.error || 'Could not submit selfie for verification.')
         return

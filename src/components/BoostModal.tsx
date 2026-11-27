@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Coins,
   CreditCard,
+  ExternalLink,
   Gift,
   Lock,
   Sparkles,
@@ -23,6 +24,7 @@ import {
   fetchBoostStatus,
   getBoostRemainingLabel,
   getMyProfiles,
+  saveProfileToSupabase,
 } from '@/utils/profileStorage'
 
 interface BoostModalProps {
@@ -51,27 +53,47 @@ export function BoostModal({ isOpen, profile, onClose, onBoosted }: BoostModalPr
   const [selectedGateway, setSelectedGateway] = useState<'stripe' | 'paystack' | 'sandbox'>('sandbox')
   const [errorMsg, setErrorMsg] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
+  const [pendingRedirect, setPendingRedirect] = useState<{
+    gateway: 'stripe' | 'paystack'
+    reference: string
+    checkoutUrl: string
+  } | null>(null)
 
   useEffect(() => {
     if (!isOpen || !profile) return
     let active = true
     setErrorMsg('')
     setSuccessMsg('')
+    setPendingRedirect(null)
     setLoading(true)
 
-    void Promise.all([fetchBoostConfig(), fetchBoostStatus(profile.id)]).then(([cfg, st]) => {
-      if (!active) return
-      setConfig(cfg)
-      setStatus(st)
-      if (cfg.gateways.paystack) {
-        setSelectedGateway('paystack')
-      } else if (cfg.gateways.stripe) {
-        setSelectedGateway('stripe')
-      } else {
-        setSelectedGateway('sandbox')
+    void Promise.all([fetchBoostConfig(), fetchBoostStatus(profile.id)]).then(
+      async ([cfg, st]) => {
+        if (!active) return
+        setConfig(cfg)
+        if (!st.ok && /profile not found/i.test(st.error || '')) {
+          const synced = await saveProfileToSupabase(profile)
+          if (!active) return
+          if (synced.syncedToSupabase) {
+            const retried = await fetchBoostStatus(profile.id)
+            if (!active) return
+            setStatus(retried)
+          } else {
+            setStatus(st)
+          }
+        } else {
+          setStatus(st)
+        }
+        if (cfg.gateways.paystack) {
+          setSelectedGateway('paystack')
+        } else if (cfg.gateways.stripe) {
+          setSelectedGateway('stripe')
+        } else {
+          setSelectedGateway('sandbox')
+        }
+        setLoading(false)
       }
-      setLoading(false)
-    })
+    )
 
     return () => {
       active = false
@@ -101,7 +123,13 @@ export function BoostModal({ isOpen, profile, onClose, onBoosted }: BoostModalPr
     setSuccessMsg('')
     setClaimingBonus(true)
     try {
-      const res = await claimDailyBoostBonus(profile.id, profile.email)
+      let res = await claimDailyBoostBonus(profile.id, profile.email)
+      if (!res.ok && /profile not found/i.test(res.error || '')) {
+        const synced = await saveProfileToSupabase(profile)
+        if (synced.syncedToSupabase) {
+          res = await claimDailyBoostBonus(profile.id, profile.email)
+        }
+      }
       if (!res.ok) {
         setErrorMsg(res.error || 'Could not claim daily points bonus.')
         return
@@ -119,7 +147,13 @@ export function BoostModal({ isOpen, profile, onClose, onBoosted }: BoostModalPr
     setSuccessMsg('')
     setSubmitting(true)
     try {
-      const res = await activateBoostWithPoints(profile.id, profile.email)
+      let res = await activateBoostWithPoints(profile.id, profile.email)
+      if (!res.ok && /profile not found/i.test(res.error || '')) {
+        const synced = await saveProfileToSupabase(profile)
+        if (synced.syncedToSupabase) {
+          res = await activateBoostWithPoints(profile.id, profile.email)
+        }
+      }
       if (!res.ok) {
         setErrorMsg(res.error || 'Unable to activate boost with points.')
         return
@@ -132,19 +166,55 @@ export function BoostModal({ isOpen, profile, onClose, onBoosted }: BoostModalPr
     }
   }
 
+  const handleVerifyPendingGateway = async () => {
+    if (!pendingRedirect || submitting) return
+    setErrorMsg('')
+    setSuccessMsg('')
+    setSubmitting(true)
+    try {
+      const confirmed = await confirmBoostCheckout({
+        profileId: profile.id,
+        gateway: pendingRedirect.gateway,
+        reference: pendingRedirect.reference,
+      })
+      if (!confirmed.ok) {
+        setErrorMsg(confirmed.error || 'Payment is not completed on Paystack yet. Complete checkout in the new tab first, then click Verify.')
+        return
+      }
+      setPendingRedirect(null)
+      setStatus(confirmed)
+      const msg = `Payment verified (${priceDisplay})! Your profile is highlighted at the top of Discover for ${config.durationHours} hours.`
+      onBoosted(resolveUpdatedProfile(confirmed), msg)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   const handleGatewayCheckout = async (e: React.FormEvent) => {
     e.preventDefault()
     if (submitting) return
     setErrorMsg('')
     setSuccessMsg('')
+    setPendingRedirect(null)
     setSubmitting(true)
     try {
-      const checkout = await createBoostCheckout({
+      let checkout = await createBoostCheckout({
         profileId: profile.id,
         gateway: selectedGateway,
         paymentMethod: sandboxMethod,
         email: profile.email,
       })
+      if (!checkout.ok && /profile not found/i.test(checkout.error || '')) {
+        const synced = await saveProfileToSupabase(profile)
+        if (synced.syncedToSupabase) {
+          checkout = await createBoostCheckout({
+            profileId: profile.id,
+            gateway: selectedGateway,
+            paymentMethod: sandboxMethod,
+            email: profile.email,
+          })
+        }
+      }
       if (!checkout.ok || !checkout.reference) {
         setErrorMsg(checkout.error || 'Could not start payment checkout.')
         return
@@ -155,6 +225,15 @@ export function BoostModal({ isOpen, profile, onClose, onBoosted }: BoostModalPr
         checkout.checkoutUrl &&
         checkout.checkoutUrl.startsWith('https://')
       ) {
+        const isInIframe = typeof window !== 'undefined' && window.self !== window.top
+        if (isInIframe && (checkout.gateway === 'paystack' || checkout.gateway === 'stripe')) {
+          setPendingRedirect({
+            gateway: checkout.gateway,
+            reference: checkout.reference,
+            checkoutUrl: checkout.checkoutUrl,
+          })
+          return
+        }
         window.location.assign(checkout.checkoutUrl)
         return
       }
@@ -431,18 +510,58 @@ export function BoostModal({ isOpen, profile, onClose, onBoosted }: BoostModalPr
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-full min-h-[48px] bg-gray-900 hover:bg-black disabled:opacity-60 text-white font-bold px-4 py-3 rounded-xl shadow-md transition flex items-center justify-center gap-2 text-sm"
-            >
-              <Lock className="w-4 h-4 text-amber-400" />
-              {submitting
-                ? 'Processing Checkout...'
-                : selectedGateway === 'sandbox'
-                ? `Complete Test Payment (${priceDisplay})`
-                : `Continue to ${selectedGateway === 'paystack' ? 'Paystack' : 'Stripe'} (${priceDisplay})`}
-            </button>
+            {pendingRedirect ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
+                <p className="text-xs font-bold text-gray-900">
+                  1. Open {pendingRedirect.gateway === 'paystack' ? 'Paystack' : 'Stripe'} to complete payment ({priceDisplay})
+                </p>
+                <a
+                  href={pendingRedirect.checkoutUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full min-h-[46px] bg-gray-900 hover:bg-black text-white font-bold px-4 py-3 rounded-xl shadow-md transition flex items-center justify-center gap-2 text-sm"
+                >
+                  <ExternalLink className="w-4 h-4 text-amber-400" />
+                  <span>
+                    Open {pendingRedirect.gateway === 'paystack' ? 'Paystack' : 'Stripe'} Payment Page
+                  </span>
+                </a>
+                <p className="text-[11px] text-gray-600">
+                  2. After completing payment in the new tab, click below to activate your 24h Boost here:
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={submitting}
+                    onClick={handleVerifyPendingGateway}
+                    className="flex-1 min-h-[44px] bg-rose-700 hover:bg-rose-800 disabled:opacity-60 text-white font-bold px-4 py-2.5 rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    {submitting ? 'Verifying...' : 'Verify & Activate Boost'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingRedirect(null)}
+                    className="min-h-[44px] px-3 py-2 rounded-xl border border-gray-300 bg-white text-gray-700 text-xs font-semibold hover:bg-gray-50"
+                  >
+                    Back
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full min-h-[48px] bg-gray-900 hover:bg-black disabled:opacity-60 text-white font-bold px-4 py-3 rounded-xl shadow-md transition flex items-center justify-center gap-2 text-sm"
+              >
+                <Lock className="w-4 h-4 text-amber-400" />
+                {submitting
+                  ? 'Processing Checkout...'
+                  : selectedGateway === 'sandbox'
+                  ? `Complete Test Payment (${priceDisplay})`
+                  : `Continue to ${selectedGateway === 'paystack' ? 'Paystack' : 'Stripe'} (${priceDisplay})`}
+              </button>
+            )}
           </form>
         )}
       </div>

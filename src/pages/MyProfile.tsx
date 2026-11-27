@@ -11,6 +11,7 @@ import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { EmailVerificationModal } from '@/components/EmailVerificationModal'
 import { SelfieVerificationModal } from '@/components/SelfieVerificationModal'
 import { BoostModal } from '@/components/BoostModal'
+import { RestoreProfileModal } from '@/components/RestoreProfileModal'
 import {
   Profile,
   deleteMyProfile,
@@ -41,6 +42,7 @@ import {
   AlertCircle,
   Zap,
   Coins,
+  KeyRound,
 } from 'lucide-react'
 
 const VILLAGES: Record<string, string[]> = {
@@ -70,6 +72,7 @@ export function MyProfile({
   const [verifyModalOpen, setVerifyModalOpen] = useState(false)
   const [selfieModalOpen, setSelfieModalOpen] = useState(false)
   const [boostModalOpen, setBoostModalOpen] = useState(false)
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false)
   const [pendingPhotoBlob, setPendingPhotoBlob] = useState<Blob | null>(null)
   const [formData, setFormData] = useState<Profile | null>(null)
   const [feedback, setFeedback] = useState('')
@@ -259,13 +262,39 @@ export function MyProfile({
           <p className="text-xs text-gray-500">
             Create your Mopani Singles profile to browse matches, request selfie verification, and send private messages. One profile is allowed per user.
           </p>
-          <button
-            onClick={onGoRegister}
-            className="w-full min-h-[44px] bg-rose-700 hover:bg-rose-800 text-white font-bold py-3 rounded-2xl shadow-md transition text-sm"
-          >
-            Create Your Profile Now
-          </button>
+          <div className="space-y-2.5">
+            <button
+              onClick={onGoRegister}
+              className="w-full min-h-[44px] bg-rose-700 hover:bg-rose-800 text-white font-bold py-3 rounded-2xl shadow-md transition text-sm"
+            >
+              Create Your Profile Now
+            </button>
+            <button
+              type="button"
+              onClick={() => setRestoreModalOpen(true)}
+              className="w-full min-h-[44px] bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-950 font-bold py-3 rounded-2xl transition text-sm flex items-center justify-center gap-2"
+            >
+              <KeyRound className="w-4 h-4 text-rose-700" />
+              Sign In / Restore Existing Profile
+            </button>
+          </div>
         </div>
+
+        <RestoreProfileModal
+          isOpen={restoreModalOpen}
+          onClose={() => setRestoreModalOpen(false)}
+          onRestored={(restoredProfile) => {
+            setProfiles(getMyProfiles())
+            setSelectedId(restoredProfile.id)
+            setFormData(restoredProfile)
+            setRestoreModalOpen(false)
+            setFeedback(`Welcome back, ${restoredProfile.full_name}! Your profile is restored on this device.`)
+          }}
+          onNeedsRegistration={() => {
+            setRestoreModalOpen(false)
+            onGoRegister()
+          }}
+        />
       </div>
     )
   }
@@ -274,12 +303,21 @@ export function MyProfile({
     <div className="max-w-3xl mx-auto px-4 py-10 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <BackButton onClick={onBack} label="Back to Discover" />
-        <button
-          onClick={onOpenChat}
-          className="min-h-[44px] bg-white border border-rose-200 hover:bg-rose-50 text-rose-700 text-xs font-bold px-4 py-2 rounded-xl shadow-xs transition flex items-center gap-1.5"
-        >
-          <MessageCircle className="w-4 h-4" /> Open Private Messages
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setRestoreModalOpen(true)}
+            className="min-h-[44px] bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold px-3.5 py-2 rounded-xl shadow-xs transition flex items-center gap-1.5"
+          >
+            <KeyRound className="w-3.5 h-3.5 text-rose-700" /> Switch / Restore Account
+          </button>
+          <button
+            onClick={onOpenChat}
+            className="min-h-[44px] bg-white border border-rose-200 hover:bg-rose-50 text-rose-700 text-xs font-bold px-4 py-2 rounded-xl shadow-xs transition flex items-center gap-1.5"
+          >
+            <MessageCircle className="w-4 h-4" /> Open Private Messages
+          </button>
+        </div>
       </div>
 
       {feedback && (
@@ -802,6 +840,22 @@ export function MyProfile({
           setFormData(updatedProfile)
           setBoostModalOpen(false)
           setFeedback(message)
+        }}
+      />
+
+      <RestoreProfileModal
+        isOpen={restoreModalOpen}
+        onClose={() => setRestoreModalOpen(false)}
+        onRestored={(restoredProfile) => {
+          setProfiles(getMyProfiles())
+          setSelectedId(restoredProfile.id)
+          setFormData(restoredProfile)
+          setRestoreModalOpen(false)
+          setFeedback(`Welcome back, ${restoredProfile.full_name}! Your profile is restored on this device.`)
+        }}
+        onNeedsRegistration={() => {
+          setRestoreModalOpen(false)
+          onGoRegister()
         }}
       />
     </div>
