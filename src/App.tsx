@@ -11,12 +11,21 @@ import { Privacy } from './pages/Privacy'
 import { DeleteData } from './pages/DeleteData'
 import { Admin } from './pages/Admin'
 import { Logo } from './components/Logo'
+import { SupabaseDiagnosticAlert } from './components/SupabaseDiagnosticAlert'
 import { getGoogleMapsApiKey } from './lib/googleMaps'
+import { consumeEmailVerificationFromUrl } from './lib/supabase'
+import { confirmBoostCheckout } from './utils/profileStorage'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('discover')
   const [selectedChatRecipientId, setSelectedChatRecipientId] = useState<string>('')
   const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState<boolean>(false)
+  const [boostBanner, setBoostBanner] = useState<{ ok: boolean; text: string } | null>(null)
+  const [authLinkStatus, setAuthLinkStatus] = useState<{
+    verified: boolean
+    email?: string
+    error?: string
+  } | null>(null)
   const mapsApiKey = getGoogleMapsApiKey()
 
   useEffect(() => {
@@ -24,6 +33,45 @@ export default function App() {
     window.addEventListener('gmp-quota-exceeded', handleQuotaExceeded)
     return () => {
       window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded)
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    void consumeEmailVerificationFromUrl().then((res) => {
+      if (!active || !res) return
+      setAuthLinkStatus({ verified: res.verified, email: res.email, error: res.error })
+      setActiveTab('register')
+    })
+
+    const params = new URLSearchParams(window.location.search)
+    const boostCheckout = params.get('boost_checkout')
+    if (boostCheckout === 'cancelled') {
+      setBoostBanner({ ok: false, text: 'Boost payment checkout was cancelled.' })
+      window.history.replaceState({}, '', window.location.pathname)
+    } else if (boostCheckout === 'success') {
+      const gateway = params.get('gateway')
+      const profileId = params.get('profile_id') || ''
+      const reference = params.get('session_id') || params.get('reference') || params.get('trxref') || ''
+      if ((gateway === 'stripe' || gateway === 'paystack') && profileId && reference) {
+        void confirmBoostCheckout({ profileId, gateway, reference }).then((res) => {
+          if (!active) return
+          if (res.ok) {
+            setBoostBanner({
+              ok: true,
+              text: 'Payment confirmed! Your profile is now boosted at the top of Discover for 24 hours.',
+            })
+            setActiveTab('discover')
+          } else {
+            setBoostBanner({ ok: false, text: res.error || 'Unable to verify boost payment.' })
+          }
+          window.history.replaceState({}, '', window.location.pathname)
+        })
+      }
+    }
+
+    return () => {
+      active = false
     }
   }, [])
 
@@ -52,6 +100,25 @@ export default function App() {
       )}
 
       <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <SupabaseDiagnosticAlert mode="banner" />
+      {boostBanner && (
+        <div
+          className={`px-4 py-2.5 text-xs md:text-sm text-center font-semibold border-b flex items-center justify-center gap-3 ${
+            boostBanner.ok
+              ? 'bg-amber-50 border-amber-200 text-amber-950'
+              : 'bg-red-50 border-red-200 text-red-800'
+          }`}
+        >
+          <span>{boostBanner.text}</span>
+          <button
+            type="button"
+            onClick={() => setBoostBanner(null)}
+            className="underline font-bold"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <main className="flex-1">
         {activeTab === 'discover' && (
@@ -87,6 +154,7 @@ export default function App() {
             onComplete={() => setActiveTab('discover')}
             onGoMyProfile={() => setActiveTab('myprofile')}
             onBack={() => setActiveTab('discover')}
+            authLinkStatus={authLinkStatus}
           />
         )}
         {activeTab === 'safety' && <Safety onBack={() => setActiveTab('discover')} />}
@@ -130,7 +198,7 @@ export default function App() {
               Smart Matches
             </button>
             <button onClick={() => setActiveTab('myprofile')} className="hover:text-rose-700 transition">
-              My Profiles
+              My Profile
             </button>
             <button onClick={() => setActiveTab('safety')} className="hover:text-rose-700 transition">
               Safety

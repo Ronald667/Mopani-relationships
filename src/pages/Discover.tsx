@@ -4,6 +4,10 @@ import { ReportModal } from '@/components/ReportModal'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
 import { Logo } from '@/components/Logo'
 import { DistanceMapPanel } from '@/components/DistanceMapPanel'
+import { EmailVerificationModal } from '@/components/EmailVerificationModal'
+import { SelfieVerificationModal } from '@/components/SelfieVerificationModal'
+import { BoostModal } from '@/components/BoostModal'
+import { LocalEventsSection } from '@/components/LocalEventsSection'
 import { useLocationDistances } from '@/hooks/useLocationDistances'
 import { formatDistanceKm, formatTravelDuration } from '@/lib/googleMaps'
 import {
@@ -11,12 +15,20 @@ import {
   fetchApprovedProfiles,
   getActiveProfile,
   getActiveProfileId,
+  getBoostRemainingLabel,
+  getProfileVerificationStatus,
+  isProfileBoosted,
+  isProfileEmailVerified,
+  isProfileIdentityVerified,
   normalizePhone,
+  sortProfilesBoostFirst,
 } from '@/utils/profileStorage'
 import {
   MapPin,
   MessageCircle,
   ShieldCheck,
+  BadgeCheck,
+  Camera,
   Heart,
   Sparkles,
   Filter,
@@ -25,6 +37,7 @@ import {
   RefreshCw,
   Compass,
   Route as RouteIcon,
+  Zap,
 } from 'lucide-react'
 
 const VILLAGES: Record<string, string[]> = {
@@ -44,8 +57,8 @@ export function Discover({
 }) {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [loading, setLoading] = useState(true)
-  const [activeProfileId] = useState(() => getActiveProfileId())
-  const activeProfile = useMemo(() => getActiveProfile(), [activeProfileId])
+  const [activeProfileId, setActiveProfileIdState] = useState(() => getActiveProfileId())
+  const [activeProfile, setActiveProfile] = useState<Profile | null>(() => getActiveProfile())
 
   const [selectedMunicipality, setSelectedMunicipality] = useState('')
   const [selectedVillage, setSelectedVillage] = useState('')
@@ -60,6 +73,15 @@ export function Discover({
 
   const [reportModalOpen, setReportModalOpen] = useState(false)
   const [reportingProfile, setReportingProfile] = useState<{ id: string; name: string } | null>(null)
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false)
+  const [selfieModalOpen, setSelfieModalOpen] = useState(false)
+  const [boostModalOpen, setBoostModalOpen] = useState(false)
+  const [boostNotice, setBoostNotice] = useState('')
+  const [pendingConnection, setPendingConnection] = useState<
+    | { type: 'chat'; profileId: string }
+    | { type: 'whatsapp'; whatsapp: string; name: string }
+    | null
+  >(null)
 
   const {
     mapsEnabled,
@@ -125,10 +147,14 @@ export function Discover({
     })
 
     if (!sortByDistance) {
-      return matched
+      return sortProfilesBoostFirst(matched)
     }
 
     return [...matched].sort((a, b) => {
+      const aBoosted = isProfileBoosted(a)
+      const bBoosted = isProfileBoosted(b)
+      if (aBoosted && !bBoosted) return -1
+      if (!aBoosted && bBoosted) return 1
       const distA = distances[a.id]?.distanceMeters ?? Number.POSITIVE_INFINITY
       const distB = distances[b.id]?.distanceMeters ?? Number.POSITIVE_INFINITY
       return distA - distB
@@ -161,6 +187,31 @@ export function Discover({
     window.open(`https://wa.me/${cleanNum}?text=${message}`, '_blank')
   }
 
+  const handleConnect = (
+    action:
+      | { type: 'chat'; profileId: string }
+      | { type: 'whatsapp'; whatsapp: string; name: string }
+  ) => {
+    const current = getActiveProfile()
+    setActiveProfile(current)
+    setActiveProfileIdState(getActiveProfileId())
+
+    if (!current) {
+      onGoRegister()
+      return
+    }
+    if (!isProfileEmailVerified(current)) {
+      setPendingConnection(action)
+      setVerifyModalOpen(true)
+      return
+    }
+    if (action.type === 'chat') {
+      onStartChat(action.profileId)
+    } else {
+      openWhatsApp(action.whatsapp, action.name)
+    }
+  }
+
   const hasActiveFilters = Boolean(
     selectedMunicipality ||
       selectedVillage ||
@@ -186,12 +237,26 @@ export function Discover({
             Connecting real singles across Maruleng, Greater Tzaneen, Greater Letaba, Ba-Phalaborwa, and Greater Giyani with real-time private chat and file sharing.
           </p>
           <div className="flex flex-wrap gap-4">
-            <button
-              onClick={onGoRegister}
-              className="bg-amber-500 hover:bg-amber-600 text-gray-900 font-bold px-6 py-3 rounded-2xl shadow-lg transition flex items-center gap-2 text-sm"
-            >
-              <Heart className="w-4 h-4 fill-gray-900" /> Create Profile Free
-            </button>
+            {activeProfile ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveProfile(getActiveProfile() || activeProfile)
+                  setBoostModalOpen(true)
+                }}
+                className="min-h-[44px] bg-amber-400 hover:bg-amber-300 text-gray-900 font-bold px-6 py-3 rounded-2xl shadow-lg transition flex items-center gap-2 text-sm"
+              >
+                <Zap className="w-4 h-4 fill-gray-900" />
+                {isProfileBoosted(activeProfile) ? 'Boost Active (24h)' : 'Boost My Profile (24h)'}
+              </button>
+            ) : (
+              <button
+                onClick={onGoRegister}
+                className="min-h-[44px] bg-amber-500 hover:bg-amber-600 text-gray-900 font-bold px-6 py-3 rounded-2xl shadow-lg transition flex items-center gap-2 text-sm"
+              >
+                <Heart className="w-4 h-4 fill-gray-900" /> Create Profile Free
+              </button>
+            )}
           </div>
         </div>
 
@@ -201,6 +266,22 @@ export function Discover({
           </div>
         </div>
       </div>
+
+      {boostNotice && (
+        <div className="mb-6 bg-amber-50 border border-amber-300 text-amber-950 px-4 py-3 rounded-2xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>{boostNotice}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setBoostNotice('')}
+            className="text-xs font-bold text-rose-700 hover:underline shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div ref={mapSectionRef} className="scroll-mt-20">
         <DistanceMapPanel
@@ -222,7 +303,7 @@ export function Discover({
           onClearOriginOverride={clearOriginOverride}
           onFocusHandled={handleFocusHandled}
           onRouteComputed={updateSingleProfileDistance}
-          onStartChat={onStartChat}
+          onStartChat={(profileId) => handleConnect({ type: 'chat', profileId })}
         />
       </div>
 
@@ -344,14 +425,31 @@ export function Discover({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {filteredProfiles.map((p) => {
             const isActiveSelf = p.id === activeProfileId
+            const boosted = isProfileBoosted(p)
+            const boostRemaining = getBoostRemainingLabel(p.boosted_until)
             const distanceInfo = distances[p.id]
             const canShowRoute = mapsEnabled && Boolean(profileCoords[p.id])
 
             return (
               <div
                 key={p.id}
-                className="bg-white rounded-2xl overflow-hidden border border-rose-100 shadow-md hover:shadow-xl transition-all duration-300 flex flex-col group"
+                className={`bg-white rounded-2xl overflow-hidden transition-all duration-300 flex flex-col group ${
+                  boosted
+                    ? 'border-2 border-amber-400 shadow-lg ring-2 ring-amber-200/70 hover:shadow-xl'
+                    : 'border border-rose-100 shadow-md hover:shadow-xl'
+                }`}
               >
+                {boosted && (
+                  <div className="bg-gradient-to-r from-amber-500 via-amber-400 to-rose-600 text-gray-950 text-[11px] font-bold px-3.5 py-1.5 flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 fill-gray-950" /> Featured Boost
+                    </span>
+                    <span className="font-mono tabular-nums text-white bg-black/25 px-2 py-0.5 rounded">
+                      {boostRemaining}
+                    </span>
+                  </div>
+                )}
+
                 <div className="relative h-64 w-full bg-gray-200 overflow-hidden">
                   <ProfileAvatar
                     src={p.photo_url}
@@ -362,9 +460,15 @@ export function Discover({
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
 
                   <div className="absolute top-3 left-3 flex gap-2">
-                    <span className="bg-black/50 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1">
-                      <ShieldCheck className="w-3.5 h-3.5 text-rose-400" /> Verified 18+
-                    </span>
+                    {isProfileIdentityVerified(p) ? (
+                      <span className="bg-emerald-700/90 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-semibold flex items-center gap-1 shadow-sm">
+                        <BadgeCheck className="w-3.5 h-3.5 text-emerald-200" /> Verified
+                      </span>
+                    ) : (
+                      <span className="bg-black/50 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1">
+                        <ShieldCheck className="w-3.5 h-3.5 text-rose-400" /> 18+ Member
+                      </span>
+                    )}
                   </div>
 
                   <div className="absolute top-3 right-3">
@@ -412,14 +516,20 @@ export function Discover({
                     {!isActiveSelf ? (
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => onStartChat(p.id)}
+                          onClick={() => handleConnect({ type: 'chat', profileId: p.id })}
                           className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-semibold py-2.5 px-3 rounded-xl shadow-md transition flex items-center justify-center gap-1.5 text-xs"
                         >
                           <Lock className="w-3.5 h-3.5" /> Private Chat
                         </button>
                         {p.whatsapp && (
                           <button
-                            onClick={() => openWhatsApp(p.whatsapp, p.full_name)}
+                            onClick={() =>
+                              handleConnect({
+                                type: 'whatsapp',
+                                whatsapp: p.whatsapp,
+                                name: p.full_name,
+                              })
+                            }
                             className="bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1 text-xs"
                           >
                             <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
@@ -427,8 +537,44 @@ export function Discover({
                         )}
                       </div>
                     ) : (
-                      <div className="text-center text-xs font-semibold text-rose-700 bg-rose-50 py-2 rounded-xl">
-                        Your Active Profile
+                      <div className="space-y-2">
+                        <div className="text-center text-xs font-semibold text-rose-700 bg-rose-50 py-2 rounded-xl">
+                          {isProfileBoosted(activeProfile || p)
+                            ? `Your Profile · Boosted (${getBoostRemainingLabel(
+                                (activeProfile || p).boosted_until
+                              )})`
+                            : isProfileIdentityVerified(activeProfile || p)
+                            ? 'Your Profile · Verified'
+                            : getProfileVerificationStatus(activeProfile || p) === 'pending'
+                            ? 'Your Profile · Verification Pending'
+                            : 'Your Active Profile'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveProfile(getActiveProfile() || p)
+                            setBoostModalOpen(true)
+                          }}
+                          className="w-full min-h-[40px] bg-rose-700 hover:bg-rose-800 text-white font-bold py-2 px-3 rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+                        >
+                          <Zap className="w-3.5 h-3.5 text-amber-300" />
+                          {isProfileBoosted(activeProfile || p) ? 'Extend 24h Boost' : 'Boost Profile (24h)'}
+                        </button>
+                        {!isProfileIdentityVerified(activeProfile || p) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveProfile(getActiveProfile() || p)
+                              setSelfieModalOpen(true)
+                            }}
+                            className="w-full min-h-[40px] bg-amber-500 hover:bg-amber-600 text-gray-900 font-bold py-2 px-3 rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                            {getProfileVerificationStatus(activeProfile || p) === 'pending'
+                              ? 'Update Verification Selfie'
+                              : 'Request Verification'}
+                          </button>
+                        )}
                       </div>
                     )}
 
@@ -463,6 +609,8 @@ export function Discover({
         </div>
       )}
 
+      <LocalEventsSection />
+
       {reportingProfile && (
         <ReportModal
           isOpen={reportModalOpen}
@@ -474,6 +622,50 @@ export function Discover({
           reportedName={reportingProfile.name}
         />
       )}
+
+      <EmailVerificationModal
+        isOpen={verifyModalOpen}
+        profile={activeProfile}
+        onClose={() => {
+          setVerifyModalOpen(false)
+          setPendingConnection(null)
+        }}
+        onVerified={(updatedProfile) => {
+          setActiveProfile(updatedProfile)
+          setVerifyModalOpen(false)
+          const action = pendingConnection
+          setPendingConnection(null)
+          if (action?.type === 'chat') {
+            onStartChat(action.profileId)
+          } else if (action?.type === 'whatsapp') {
+            openWhatsApp(action.whatsapp, action.name)
+          }
+          void fetchProfiles()
+        }}
+      />
+
+      <SelfieVerificationModal
+        isOpen={selfieModalOpen}
+        profile={activeProfile}
+        onClose={() => setSelfieModalOpen(false)}
+        onSubmitted={(updatedProfile) => {
+          setActiveProfile(updatedProfile)
+          setSelfieModalOpen(false)
+          void fetchProfiles()
+        }}
+      />
+
+      <BoostModal
+        isOpen={boostModalOpen}
+        profile={activeProfile}
+        onClose={() => setBoostModalOpen(false)}
+        onBoosted={(updatedProfile, message) => {
+          setActiveProfile(updatedProfile)
+          setBoostModalOpen(false)
+          setBoostNotice(message)
+          void fetchProfiles()
+        }}
+      />
     </div>
   )
 }

@@ -1,7 +1,6 @@
 import React, { useState } from 'react'
-import { supabase } from '@/lib/supabase'
 import { BackButton } from '@/components/BackButton'
-import { normalizePhone, removeProfilesByWhatsapp } from '@/utils/profileStorage'
+import { deleteProfilesByWhatsappOnSupabase, removeProfilesByWhatsapp } from '@/utils/profileStorage'
 import { Trash2, CheckCircle2 } from 'lucide-react'
 
 export function DeleteData({ onBack }: { onBack: () => void }) {
@@ -17,9 +16,10 @@ export function DeleteData({ onBack }: { onBack: () => void }) {
 
     setLoading(true)
     try {
-      const cleanNum = normalizePhone(whatsapp)
-      await supabase.from('profiles').delete().eq('whatsapp', cleanNum)
-      await supabase.from('profiles').delete().eq('whatsapp', whatsapp.trim())
+      const res = await deleteProfilesByWhatsappOnSupabase(whatsapp)
+      if (!res.ok && res.error) {
+        console.warn('Supabase deletion notice:', res.error)
+      }
 
       removeProfilesByWhatsapp(whatsapp)
       setDeleted(true)

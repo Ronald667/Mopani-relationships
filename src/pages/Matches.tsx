@@ -3,12 +3,16 @@ import { supabase } from '@/lib/supabase'
 import { calculateCompatibility, MatchResult } from '@/utils/matchingAlgorithm'
 import { BackButton } from '@/components/BackButton'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
+import { EmailVerificationModal } from '@/components/EmailVerificationModal'
 import { useLocationDistances } from '@/hooks/useLocationDistances'
 import { formatDistanceKm, formatTravelDuration } from '@/lib/googleMaps'
 import {
+  Profile,
   fetchApprovedProfiles,
   getActiveProfile,
   getActiveProfileId,
+  isProfileEmailVerified,
+  isProfileIdentityVerified,
   normalizePhone,
 } from '@/utils/profileStorage'
 import {
@@ -17,6 +21,7 @@ import {
   MapPin,
   MessageCircle,
   ShieldCheck,
+  BadgeCheck,
   Sliders,
   Check,
   Lock,
@@ -40,7 +45,7 @@ export function Matches({
   onGoRegister: () => void
   onBack: () => void
 }) {
-  const activeProfile = useMemo(() => getActiveProfile(), [])
+  const [activeProfile, setActiveProfile] = useState<Profile | null>(() => getActiveProfile())
   const [preferences, setPreferences] = useState(() => ({
     intention: activeProfile?.intention || 'Marriage',
     municipality: activeProfile?.municipality || 'Greater Tzaneen',
@@ -50,6 +55,12 @@ export function Matches({
 
   const [matches, setMatches] = useState<MatchResult[]>([])
   const [loading, setLoading] = useState(true)
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false)
+  const [pendingConnection, setPendingConnection] = useState<
+    | { type: 'chat'; profileId: string }
+    | { type: 'whatsapp'; whatsapp: string; name: string }
+    | null
+  >(null)
 
   const matchProfiles = useMemo(() => matches.map((m) => m.profile), [matches])
   const { mapsEnabled, origin, distances } = useLocationDistances(matchProfiles, activeProfile)
@@ -90,6 +101,35 @@ export function Matches({
       supabase.removeChannel(channel)
     }
   }, [fetchAndCalculateMatches])
+
+  const openWhatsApp = (cleanWa: string, name: string) => {
+    if (!cleanWa) return
+    const text = encodeURIComponent(`Hi ${name}, we matched on Mopani Singles-v2!`)
+    window.open(`https://wa.me/${cleanWa}?text=${text}`, '_blank')
+  }
+
+  const handleConnect = (
+    action:
+      | { type: 'chat'; profileId: string }
+      | { type: 'whatsapp'; whatsapp: string; name: string }
+  ) => {
+    const current = getActiveProfile()
+    setActiveProfile(current)
+    if (!current) {
+      onGoRegister()
+      return
+    }
+    if (!isProfileEmailVerified(current)) {
+      setPendingConnection(action)
+      setVerifyModalOpen(true)
+      return
+    }
+    if (action.type === 'chat') {
+      onStartChat(action.profileId)
+    } else {
+      openWhatsApp(action.whatsapp, action.name)
+    }
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -183,9 +223,15 @@ export function Matches({
                     <Sparkles className="w-3.5 h-3.5 text-amber-300" /> {item.score}% Match
                   </div>
 
-                  <div className="absolute top-3 left-3 bg-black/50 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5 text-rose-400" /> Verified 18+
-                  </div>
+                  {isProfileIdentityVerified(p) ? (
+                    <div className="absolute top-3 left-3 bg-emerald-700/90 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-semibold flex items-center gap-1 shadow-sm">
+                      <BadgeCheck className="w-3.5 h-3.5 text-emerald-200" /> Verified
+                    </div>
+                  ) : (
+                    <div className="absolute top-3 left-3 bg-black/50 backdrop-blur-md text-white text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-rose-400" /> 18+ Member
+                    </div>
+                  )}
 
                   <div className="absolute bottom-3 left-3 right-3 text-white">
                     <h3 className="text-xl font-bold">{p.full_name}, {p.age}</h3>
@@ -221,20 +267,25 @@ export function Matches({
 
                   <div className="pt-3 border-t border-gray-100 flex gap-2">
                     <button
-                      onClick={() => onStartChat(p.id)}
+                      onClick={() => handleConnect({ type: 'chat', profileId: p.id })}
                       className="flex-1 bg-rose-700 hover:bg-rose-800 text-white font-semibold py-2.5 rounded-xl text-xs shadow-md transition flex items-center justify-center gap-1.5"
                     >
                       <Lock className="w-3.5 h-3.5" /> Start Private Chat
                     </button>
                     {cleanWa && (
-                      <a
-                        href={`https://wa.me/${cleanWa}?text=Hi%20${encodeURIComponent(p.full_name)},%20we%20matched%20on%20Mopani%20Singles-v2!`}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleConnect({
+                            type: 'whatsapp',
+                            whatsapp: cleanWa,
+                            name: p.full_name,
+                          })
+                        }
                         className="bg-rose-100 hover:bg-rose-200 text-rose-800 font-semibold py-2.5 px-3 rounded-xl text-xs transition flex items-center justify-center gap-1"
                       >
                         <MessageCircle className="w-3.5 h-3.5" /> WhatsApp
-                      </a>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -243,6 +294,27 @@ export function Matches({
           })}
         </div>
       )}
+
+      <EmailVerificationModal
+        isOpen={verifyModalOpen}
+        profile={activeProfile}
+        onClose={() => {
+          setVerifyModalOpen(false)
+          setPendingConnection(null)
+        }}
+        onVerified={(updatedProfile) => {
+          setActiveProfile(updatedProfile)
+          setVerifyModalOpen(false)
+          const action = pendingConnection
+          setPendingConnection(null)
+          if (action?.type === 'chat') {
+            onStartChat(action.profileId)
+          } else if (action?.type === 'whatsapp') {
+            openWhatsApp(action.whatsapp, action.name)
+          }
+          void fetchAndCalculateMatches()
+        }}
+      />
     </div>
   )
 }

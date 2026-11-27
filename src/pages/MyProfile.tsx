@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { hasDirectClientSupabase, supabase } from '@/lib/supabase'
 import {
   deleteStorageFileByUrl,
   uploadDataUrlToSupabase,
@@ -8,13 +8,21 @@ import {
 import { ImageCropperModal } from '@/components/ImageCropperModal'
 import { BackButton } from '@/components/BackButton'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
+import { EmailVerificationModal } from '@/components/EmailVerificationModal'
+import { SelfieVerificationModal } from '@/components/SelfieVerificationModal'
+import { BoostModal } from '@/components/BoostModal'
 import {
   Profile,
   deleteMyProfile,
+  deleteProfileOnSupabase,
   getActiveProfileId,
+  getBoostRemainingLabel,
   getMyProfiles,
+  getProfileVerificationStatus,
+  isProfileBoosted,
+  isProfileEmailVerified,
+  isProfileIdentityVerified,
   saveProfileToSupabase,
-  setActiveProfileId,
   syncMyProfilesStatus,
   updateMyProfile,
 } from '@/utils/profileStorage'
@@ -26,8 +34,13 @@ import {
   Camera,
   Check,
   Trash2,
-  PlusCircle,
   MessageCircle,
+  MailCheck,
+  BadgeCheck,
+  Clock,
+  AlertCircle,
+  Zap,
+  Coins,
 } from 'lucide-react'
 
 const VILLAGES: Record<string, string[]> = {
@@ -48,13 +61,15 @@ export function MyProfile({
   onBack: () => void
 }) {
   const [profiles, setProfiles] = useState<Profile[]>([])
-  const [activeProfileIdState, setActiveProfileIdState] = useState<string>('')
   const [selectedId, setSelectedId] = useState<string>('')
   const [isEditing, setIsEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [cropperOpen, setCropperOpen] = useState(false)
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false)
+  const [selfieModalOpen, setSelfieModalOpen] = useState(false)
+  const [boostModalOpen, setBoostModalOpen] = useState(false)
   const [pendingPhotoBlob, setPendingPhotoBlob] = useState<Blob | null>(null)
   const [formData, setFormData] = useState<Profile | null>(null)
   const [feedback, setFeedback] = useState('')
@@ -64,7 +79,6 @@ export function MyProfile({
       const localList = getMyProfiles()
       const currentActive = getActiveProfileId()
       setProfiles(localList)
-      setActiveProfileIdState(currentActive)
       if (localList.length > 0) {
         const chosen = localList.find((p) => p.id === currentActive) || localList[0]
         setSelectedId(chosen.id)
@@ -75,8 +89,7 @@ export function MyProfile({
       if (synced.length > 0) {
         setProfiles(synced)
         const activeNow = getActiveProfileId()
-        setActiveProfileIdState(activeNow)
-        const updatedChosen = synced.find((p) => p.id === (currentActive || synced[0].id)) || synced[0]
+        const updatedChosen = synced.find((p) => p.id === (currentActive || activeNow || synced[0].id)) || synced[0]
         setFormData(updatedChosen)
       }
     }
@@ -84,21 +97,10 @@ export function MyProfile({
   }, [])
 
   const selectedProfile = profiles.find((p) => p.id === selectedId) || profiles[0] || null
-
-  const handleSelectProfile = (profile: Profile) => {
-    setSelectedId(profile.id)
-    setFormData(profile)
-    setPendingPhotoBlob(null)
-    setIsEditing(false)
-    setConfirmingDelete(false)
-    setFeedback('')
-  }
-
-  const handleSetAsActive = (id: string) => {
-    setActiveProfileId(id)
-    setActiveProfileIdState(id)
-    setFeedback('Active profile updated for private messaging and smart matching.')
-  }
+  const identityStatus = getProfileVerificationStatus(selectedProfile)
+  const isIdentityVerified = isProfileIdentityVerified(selectedProfile)
+  const isBoosted = isProfileBoosted(selectedProfile)
+  const boostRemaining = getBoostRemainingLabel(selectedProfile?.boosted_until)
 
   const handleCropComplete = async (croppedBase64: string, blob?: Blob) => {
     if (isEditing && formData) {
@@ -128,15 +130,22 @@ export function MyProfile({
         photo_url: nextPhotoUrl,
       }
 
-      const { data: updatedRow, error: updateErr } = await supabase
-        .from('profiles')
-        .update({ photo_url: nextPhotoUrl })
-        .eq('id', selectedProfile.id)
-        .select()
-        .maybeSingle()
+      let syncedProfile = nextProfile
+      if (hasDirectClientSupabase()) {
+        const { data: updatedRow, error: updateErr } = await supabase
+          .from('profiles')
+          .update({ photo_url: nextPhotoUrl })
+          .eq('id', selectedProfile.id)
+          .select()
+          .maybeSingle()
 
-      let syncedProfile = (updatedRow as Profile) || nextProfile
-      if (updateErr || !updatedRow) {
+        if (!updateErr && updatedRow) {
+          syncedProfile = updatedRow as Profile
+        } else {
+          const res = await saveProfileToSupabase(nextProfile)
+          syncedProfile = res.profile
+        }
+      } else {
         const res = await saveProfileToSupabase(nextProfile)
         syncedProfile = res.profile
       }
@@ -180,18 +189,34 @@ export function MyProfile({
         }
       }
 
+      const emailChanged =
+        (formData.email || '').trim().toLowerCase() !==
+        (selectedProfile?.email || '').trim().toLowerCase()
+
       const nextProfile: Profile = {
         ...formData,
         photo_url: nextPhotoUrl,
+        email_verified: emailChanged ? false : formData.email_verified,
       }
 
-      const { profile: syncedProfile } = await saveProfileToSupabase(nextProfile)
+      const { profile: syncedProfile, syncedToSupabase, error: dbError } =
+        await saveProfileToSupabase(nextProfile)
       const updated = updateMyProfile(syncedProfile)
       setProfiles(updated)
       setFormData(syncedProfile)
       setPendingPhotoBlob(null)
       setIsEditing(false)
-      setFeedback('Profile updated and synced!')
+      if (syncedToSupabase) {
+        setFeedback(
+          emailChanged
+            ? 'Profile updated! Please click Verify Email to confirm your new email address before connecting.'
+            : 'Profile updated and synced to Supabase!'
+        )
+      } else {
+        setFeedback(
+          `Saved locally on this device, but Supabase sync failed (${dbError || 'check supabase.sql schema'}).`
+        )
+      }
     } finally {
       setSaving(false)
     }
@@ -201,20 +226,18 @@ export function MyProfile({
     if (!selectedProfile) return
     try {
       await deleteStorageFileByUrl(selectedProfile.photo_url)
-      await supabase.from('profiles').delete().eq('id', selectedProfile.id)
+      await deleteProfileOnSupabase(selectedProfile.id)
     } catch {
       // local removal still proceeds
     }
 
     const next = deleteMyProfile(selectedProfile.id)
     setProfiles(next)
-    const nextActive = getActiveProfileId()
-    setActiveProfileIdState(nextActive)
     setConfirmingDelete(false)
     setIsEditing(false)
 
     if (next.length > 0) {
-      const nextSelected = next.find((p) => p.id === nextActive) || next[0]
+      const nextSelected = next[0]
       setSelectedId(nextSelected.id)
       setFormData(nextSelected)
       setFeedback('Profile deleted.')
@@ -232,13 +255,13 @@ export function MyProfile({
           <div className="w-16 h-16 bg-rose-100 text-rose-700 rounded-full flex items-center justify-center mx-auto">
             <User className="w-8 h-8" />
           </div>
-          <h2 className="text-2xl font-black text-gray-900">No Profiles Created Yet</h2>
+          <h2 className="text-2xl font-black text-gray-900">No Profile Created Yet</h2>
           <p className="text-xs text-gray-500">
-            Create one or more Mopani Singles profiles to browse matches and send private messages.
+            Create your Mopani Singles profile to browse matches, request selfie verification, and send private messages. One profile is allowed per user.
           </p>
           <button
             onClick={onGoRegister}
-            className="w-full bg-rose-700 hover:bg-rose-800 text-white font-bold py-3 rounded-2xl shadow-md transition text-sm"
+            className="w-full min-h-[44px] bg-rose-700 hover:bg-rose-800 text-white font-bold py-3 rounded-2xl shadow-md transition text-sm"
           >
             Create Your Profile Now
           </button>
@@ -252,64 +275,11 @@ export function MyProfile({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <BackButton onClick={onBack} label="Back to Discover" />
         <button
-          onClick={onGoRegister}
-          className="bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-1.5"
+          onClick={onOpenChat}
+          className="min-h-[44px] bg-white border border-rose-200 hover:bg-rose-50 text-rose-700 text-xs font-bold px-4 py-2 rounded-xl shadow-xs transition flex items-center gap-1.5"
         >
-          <PlusCircle className="w-4 h-4" /> Create New Profile
+          <MessageCircle className="w-4 h-4" /> Open Private Messages
         </button>
-      </div>
-
-      <div className="bg-white rounded-2xl p-4 border border-rose-100 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-xs font-bold uppercase tracking-wider text-gray-500">
-            Your Created Profiles ({profiles.length})
-          </h2>
-          <button
-            onClick={onOpenChat}
-            className="text-xs font-semibold text-rose-700 hover:text-rose-800 flex items-center gap-1"
-          >
-            <MessageCircle className="w-3.5 h-3.5" /> Open Private Messages
-          </button>
-        </div>
-
-        <div className="flex flex-wrap gap-2.5">
-          {profiles.map((p) => {
-            const isSelected = p.id === selectedProfile.id
-            const isActiveChat = p.id === activeProfileIdState
-            return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => handleSelectProfile(p)}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border text-left transition ${
-                  isSelected
-                    ? 'border-rose-600 bg-rose-50/80 shadow-xs'
-                    : 'border-gray-200 bg-white hover:bg-gray-50'
-                }`}
-              >
-                <ProfileAvatar
-                  src={p.photo_url}
-                  name={p.full_name}
-                  className="w-9 h-9 rounded-full shrink-0"
-                  textSizeClass="text-xs"
-                />
-                <div>
-                  <div className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
-                    <span>{p.full_name}</span>
-                    {isActiveChat && (
-                      <span className="bg-rose-700 text-white text-[10px] px-1.5 py-0.5 rounded-md font-semibold">
-                        Active
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[11px] text-gray-500">
-                    {p.age} yrs • {p.village}
-                  </div>
-                </div>
-              </button>
-            )
-          })}
-        </div>
       </div>
 
       {feedback && (
@@ -321,19 +291,42 @@ export function MyProfile({
 
       <div className="bg-white rounded-3xl shadow-xl border border-rose-100 overflow-hidden">
         <div className="bg-gradient-to-r from-rose-900 via-rose-800 to-amber-700 p-8 text-white relative">
-          <div className="flex flex-wrap justify-between items-start gap-3">
-            <div className="inline-flex items-center gap-2 bg-rose-950/60 backdrop-blur-md px-3 py-1 rounded-full text-xs font-medium text-rose-200 border border-rose-500/30">
-              <ShieldCheck className="w-3.5 h-3.5 text-rose-400" />
-              {selectedProfile.id === activeProfileIdState ? 'Active Chat & Match Profile' : 'Saved Profile'}
+          <div className="flex flex-wrap justify-between items-center gap-3">
+            <div className="inline-flex items-center gap-2 text-xs font-semibold text-rose-100">
+              {isIdentityVerified ? (
+                <>
+                  <BadgeCheck className="w-4 h-4 text-emerald-300" />
+                  <span>Verified Profile</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4 text-amber-300" />
+                  <span>My Profile</span>
+                </>
+              )}
+              <span aria-hidden="true">·</span>
+              <span>One profile per user</span>
             </div>
 
             <div className="flex flex-wrap gap-2">
-              {selectedProfile.id !== activeProfileIdState && !isEditing && (
+              {!isEditing && (
                 <button
-                  onClick={() => handleSetAsActive(selectedProfile.id)}
-                  className="bg-amber-500 hover:bg-amber-600 text-gray-900 font-bold px-3.5 py-2 rounded-xl text-xs transition"
+                  type="button"
+                  onClick={() => setBoostModalOpen(true)}
+                  className="min-h-[40px] bg-amber-400 hover:bg-amber-300 text-gray-900 font-bold px-4 py-2 rounded-xl text-xs transition flex items-center gap-1.5 shadow-sm whitespace-nowrap shrink-0"
                 >
-                  Set as Active Profile
+                  <Zap className="w-3.5 h-3.5 fill-gray-900" />
+                  {isBoosted ? `Boosted (${boostRemaining})` : 'Boost Profile'}
+                </button>
+              )}
+              {!isEditing && !isIdentityVerified && (
+                <button
+                  type="button"
+                  onClick={() => setSelfieModalOpen(true)}
+                  className="min-h-[40px] bg-white/25 hover:bg-white/35 text-white font-semibold px-4 py-2 rounded-xl text-xs backdrop-blur-md transition flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  {identityStatus === 'pending' ? 'Verification Pending' : 'Request Verification'}
                 </button>
               )}
               {!isEditing && (
@@ -344,7 +337,7 @@ export function MyProfile({
                     setIsEditing(true)
                     setFeedback('')
                   }}
-                  className="bg-white/25 hover:bg-white/35 text-white font-semibold px-4 py-2 rounded-xl text-xs backdrop-blur-md transition flex items-center gap-1.5"
+                  className="min-h-[40px] bg-white/25 hover:bg-white/35 text-white font-semibold px-4 py-2 rounded-xl text-xs backdrop-blur-md transition flex items-center gap-1.5 whitespace-nowrap shrink-0"
                 >
                   <Edit3 className="w-3.5 h-3.5" /> Edit Profile
                 </button>
@@ -374,46 +367,156 @@ export function MyProfile({
                 </button>
               )}
             </div>
-            <span
-              className={`text-xs font-bold px-3 py-1.5 rounded-full ${
-                selectedProfile.is_banned
-                  ? 'bg-red-100 text-red-800'
+            <div className="text-xs font-semibold text-gray-600 flex items-center gap-2">
+              <span
+                className={
+                  selectedProfile.is_banned
+                    ? 'text-red-700'
+                    : selectedProfile.is_approved
+                    ? 'text-emerald-700'
+                    : 'text-amber-700'
+                }
+              >
+                {selectedProfile.is_banned
+                  ? 'Banned'
                   : selectedProfile.is_approved
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : 'bg-amber-100 text-amber-800'
-              }`}
-            >
-              {selectedProfile.is_banned
-                ? 'Banned'
-                : selectedProfile.is_approved
-                ? 'Approved & Live'
-                : 'Pending Safety Review'}
-            </span>
+                  ? 'Approved & Live'
+                  : 'Pending Safety Review'}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span
+                className={
+                  identityStatus === 'verified'
+                    ? 'text-emerald-700'
+                    : identityStatus === 'pending'
+                    ? 'text-amber-700'
+                    : identityStatus === 'rejected'
+                    ? 'text-red-700'
+                    : 'text-gray-500'
+                }
+              >
+                {identityStatus === 'verified'
+                  ? 'Identity Verified'
+                  : identityStatus === 'pending'
+                  ? 'Selfie Under Review'
+                  : identityStatus === 'rejected'
+                  ? 'Verification Declined'
+                  : 'Not Identity Verified'}
+              </span>
+            </div>
           </div>
 
           {!isEditing ? (
             <div className="space-y-6">
               <div>
-                <h1 className="text-2xl font-black text-gray-900">
-                  {selectedProfile.full_name}, {selectedProfile.age}
+                <h1 className="text-2xl font-black text-gray-900 flex items-center gap-2 flex-wrap">
+                  <span>
+                    {selectedProfile.full_name}, {selectedProfile.age}
+                  </span>
+                  {isIdentityVerified && (
+                    <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700">
+                      <BadgeCheck className="w-5 h-5 text-emerald-600" /> Verified
+                    </span>
+                  )}
                 </h1>
                 <p className="text-xs text-rose-600 font-semibold flex items-center gap-1 mt-1">
-                  <MapPin className="w-3.5 h-3.5" /> {selectedProfile.village}, {selectedProfile.municipality} • {selectedProfile.language}
+                  <MapPin className="w-3.5 h-3.5" /> {selectedProfile.village}, {selectedProfile.municipality} · {selectedProfile.language} · {selectedProfile.intention} · {selectedProfile.gender}
                 </p>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <span className="bg-rose-50 text-rose-700 text-xs font-bold px-3 py-1 rounded-xl">
-                  Intention: {selectedProfile.intention}
-                </span>
-                <span className="bg-gray-100 text-gray-700 text-xs font-semibold px-3 py-1 rounded-xl">
-                  Gender: {selectedProfile.gender}
-                </span>
               </div>
 
               <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
                 <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">My Bio</h3>
                 <p className="text-sm text-gray-800 leading-relaxed">"{selectedProfile.bio}"</p>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-rose-200 flex flex-wrap items-center justify-between gap-4">
+                <div className="space-y-1 max-w-md">
+                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    {identityStatus === 'verified' ? (
+                      <>
+                        <BadgeCheck className="w-4 h-4 text-emerald-600" />
+                        <span>Profile Status: Verified</span>
+                      </>
+                    ) : identityStatus === 'pending' ? (
+                      <>
+                        <Clock className="w-4 h-4 text-amber-600" />
+                        <span>Selfie Verification Pending Admin Review</span>
+                      </>
+                    ) : identityStatus === 'rejected' ? (
+                      <>
+                        <AlertCircle className="w-4 h-4 text-red-600" />
+                        <span>Verification Request Declined</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4 text-rose-700" />
+                        <span>Identity Verification</span>
+                      </>
+                    )}
+                  </h3>
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    {identityStatus === 'verified'
+                      ? 'Your selfie was approved by an admin. Other members see your Verified status on Discover and Matches.'
+                      : identityStatus === 'pending'
+                      ? `Selfie submitted${
+                          selectedProfile.verification_requested_at
+                            ? ` on ${new Date(selectedProfile.verification_requested_at).toLocaleDateString()}`
+                            : ''
+                        }. Your status will update to Verified once approved by an admin.`
+                      : identityStatus === 'rejected'
+                      ? selectedProfile.verification_note ||
+                        'Your previous selfie could not be verified. Please upload a clearer selfie.'
+                      : 'Upload a quick selfie for manual admin verification to mark your profile status as Verified.'}
+                  </p>
+                </div>
+
+                {identityStatus === 'verified' ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                    <BadgeCheck className="w-4 h-4" /> Verified
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setSelfieModalOpen(true)}
+                    className="min-h-[44px] bg-rose-700 hover:bg-rose-800 text-white text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-2 whitespace-nowrap shrink-0"
+                  >
+                    <Camera className="w-4 h-4" />
+                    {identityStatus === 'pending' ? 'Upload New Selfie' : 'Request Verification'}
+                  </button>
+                )}
+              </div>
+
+              <div className="bg-amber-50/70 p-4 rounded-2xl border border-amber-200 flex flex-wrap items-center justify-between gap-4">
+                <div className="space-y-1 max-w-md">
+                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-amber-600 fill-amber-500" />
+                    <span>
+                      {isBoosted ? `24h Discover Boost Active (${boostRemaining})` : '24h Profile Boost'}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-gray-600 leading-relaxed flex flex-wrap items-center gap-2">
+                    <span>
+                      {isBoosted
+                        ? 'Your profile is currently highlighted at the top of the Discover feed.'
+                        : 'Highlight your profile at the top of the Mopani Discover feed for 24 hours using Boost Points or the Payment Gateway.'}
+                    </span>
+                  </p>
+                  <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5 tabular-nums pt-0.5">
+                    <Coins className="w-3.5 h-3.5 text-amber-700" />
+                    <span>
+                      Points Balance: {selectedProfile.boost_points ?? 100} pts (50 pts per 24h boost)
+                    </span>
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setBoostModalOpen(true)}
+                  className="min-h-[44px] bg-gray-900 hover:bg-black text-white text-xs sm:text-sm font-bold px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-2 whitespace-nowrap shrink-0"
+                >
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  {isBoosted ? 'Extend Boost (+24h)' : 'Boost Profile (24h)'}
+                </button>
               </div>
 
               <div className="bg-rose-50/60 p-4 rounded-2xl border border-rose-100 flex flex-wrap items-center justify-between gap-3">
@@ -423,14 +526,41 @@ export function MyProfile({
                     <p className="text-xs text-gray-600 font-mono mt-0.5">{selectedProfile.whatsapp}</p>
                   </div>
                   <div>
-                    <h3 className="text-xs font-bold text-rose-900">Private Message Email Alerts</h3>
+                    <h3 className="text-xs font-bold text-rose-900">Email &amp; Contact Status</h3>
                     <p className="text-xs text-gray-600 mt-0.5">
-                      {selectedProfile.email
-                        ? `${selectedProfile.email} • ${
-                            selectedProfile.email_notifications === false ? 'Alerts paused' : 'Alerts enabled'
-                          }`
-                        : 'Not set (edit profile to add email alerts)'}
+                      {selectedProfile.email ? (
+                        <>
+                          <span>{selectedProfile.email}</span>
+                          <span aria-hidden="true"> · </span>
+                          <span
+                            className={
+                              isProfileEmailVerified(selectedProfile)
+                                ? 'text-emerald-700 font-semibold'
+                                : 'text-amber-700 font-semibold'
+                            }
+                          >
+                            {isProfileEmailVerified(selectedProfile)
+                              ? 'Email confirmed'
+                              : 'Email not verified yet'}
+                          </span>
+                          <span aria-hidden="true"> · </span>
+                          <span>
+                            {selectedProfile.email_notifications === false ? 'Alerts paused' : 'Alerts enabled'}
+                          </span>
+                        </>
+                      ) : (
+                        'Not set — verify your email to connect with other members'
+                      )}
                     </p>
+                    {!isProfileEmailVerified(selectedProfile) && (
+                      <button
+                        type="button"
+                        onClick={() => setVerifyModalOpen(true)}
+                        className="mt-2 min-h-[44px] inline-flex items-center gap-1.5 bg-rose-700 hover:bg-rose-800 text-white text-xs font-semibold px-3.5 py-2 rounded-lg transition"
+                      >
+                        <MailCheck className="w-3.5 h-3.5" /> Verify Email Now
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -635,6 +765,44 @@ export function MyProfile({
         isOpen={cropperOpen}
         onClose={() => setCropperOpen(false)}
         onCropComplete={handleCropComplete}
+      />
+
+      <EmailVerificationModal
+        isOpen={verifyModalOpen}
+        profile={selectedProfile}
+        onClose={() => setVerifyModalOpen(false)}
+        onVerified={(updatedProfile) => {
+          setProfiles(getMyProfiles())
+          setFormData(updatedProfile)
+          setVerifyModalOpen(false)
+          setFeedback('Email verified with Supabase Auth! You can now connect and chat with other users.')
+        }}
+      />
+
+      <SelfieVerificationModal
+        isOpen={selfieModalOpen}
+        profile={selectedProfile}
+        onClose={() => setSelfieModalOpen(false)}
+        onSubmitted={(updatedProfile) => {
+          setProfiles(getMyProfiles())
+          setFormData(updatedProfile)
+          setSelfieModalOpen(false)
+          setFeedback(
+            'Selfie uploaded! Your verification request is now pending manual admin review.'
+          )
+        }}
+      />
+
+      <BoostModal
+        isOpen={boostModalOpen}
+        profile={selectedProfile}
+        onClose={() => setBoostModalOpen(false)}
+        onBoosted={(updatedProfile, message) => {
+          setProfiles(getMyProfiles())
+          setFormData(updatedProfile)
+          setBoostModalOpen(false)
+          setFeedback(message)
+        }}
       />
     </div>
   )

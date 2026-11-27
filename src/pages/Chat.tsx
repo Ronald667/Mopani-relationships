@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import {
+  hasDirectClientSupabase,
+  hydrateSupabaseFromServerConfig,
+  supabase,
+} from '@/lib/supabase'
 import {
   ChatFileAttachment,
   encodeFileMessageContent,
@@ -10,6 +14,7 @@ import {
 } from '@/lib/supabase/storage'
 import { BackButton } from '@/components/BackButton'
 import { ProfileAvatar } from '@/components/ProfileAvatar'
+import { EmailVerificationModal } from '@/components/EmailVerificationModal'
 import {
   Profile,
   PrivateMessage,
@@ -24,15 +29,17 @@ import {
   getLocalThreadMessages,
   getMyProfiles,
   getPrivatePairKey,
+  isProfileEmailVerified,
+  isProfileIdentityVerified,
   markThreadAsSeen,
   normalizePhone,
-  setActiveProfileId,
 } from '@/utils/profileStorage'
 import {
   MessageCircle,
   Send,
   CheckCheck,
   Lock,
+  MailCheck,
   UserPlus,
   Users,
   Paperclip,
@@ -42,6 +49,7 @@ import {
   FolderOpen,
   Search,
   AlertCircle,
+  BadgeCheck,
 } from 'lucide-react'
 
 interface Conversation {
@@ -51,6 +59,7 @@ interface Conversation {
   village: string
   municipality: string
   whatsapp: string
+  isVerified: boolean
   lastMessage: string
   lastTime: string
   lastTimestamp: number
@@ -88,6 +97,7 @@ export function Chat({
   const [searchTerm, setSearchTerm] = useState('')
   const [showSharedFiles, setShowSharedFiles] = useState(false)
   const [loadingThreads, setLoadingThreads] = useState(true)
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -124,24 +134,48 @@ export function Chat({
       const localThreadMap = getAllLocalConversationsForProfile(currentSenderId)
       const remoteThreadMap: Record<string, PrivateMessage[]> = {}
 
-      try {
-        const { data, error } = await supabase
-          .from('messages')
-          .select('*')
-          .or(`sender_id.eq.${currentSenderId},receiver_id.eq.${currentSenderId}`)
-          .order('created_at', { ascending: true })
+      await hydrateSupabaseFromServerConfig()
+      let fetchedMessages: PrivateMessage[] | null = null
 
-        if (!error && data) {
-          for (const msg of data as PrivateMessage[]) {
-            const peerId = msg.sender_id === currentSenderId ? msg.receiver_id : msg.sender_id
-            if (!peerId || peerId === currentSenderId) continue
-            if (!remoteThreadMap[peerId]) remoteThreadMap[peerId] = []
-            remoteThreadMap[peerId].push(msg)
-            appendLocalThreadMessage(msg)
+      if (hasDirectClientSupabase()) {
+        try {
+          const { data, error } = await supabase
+            .from('messages')
+            .select('*')
+            .or(`sender_id.eq.${currentSenderId},receiver_id.eq.${currentSenderId}`)
+            .order('created_at', { ascending: true })
+
+          if (!error && data) {
+            fetchedMessages = data as PrivateMessage[]
           }
+        } catch {
+          // fall through to server proxy
         }
-      } catch {
-        // fall back to local threads
+      }
+
+      if (!fetchedMessages) {
+        try {
+          const res = await fetch(`/api/messages?profileId=${encodeURIComponent(currentSenderId)}`)
+          const json = (await res.json().catch(() => ({}))) as {
+            ok?: boolean
+            messages?: PrivateMessage[]
+          }
+          if (res.ok && json.ok && Array.isArray(json.messages)) {
+            fetchedMessages = json.messages
+          }
+        } catch {
+          // fall back to local threads
+        }
+      }
+
+      if (fetchedMessages) {
+        for (const msg of fetchedMessages) {
+          const peerId = msg.sender_id === currentSenderId ? msg.receiver_id : msg.sender_id
+          if (!peerId || peerId === currentSenderId) continue
+          if (!remoteThreadMap[peerId]) remoteThreadMap[peerId] = []
+          remoteThreadMap[peerId].push(msg)
+          appendLocalThreadMessage(msg)
+        }
       }
 
       const peerIdsWithMessages = new Set([
@@ -182,6 +216,7 @@ export function Chat({
           village: peer.village || 'Mopani',
           municipality: peer.municipality || 'Limpopo',
           whatsapp: peer.whatsapp || '',
+          isVerified: isProfileIdentityVerified(peer),
           lastMessage: latest ? getMessagePreviewText(latest.content) : 'Private chat — no messages yet',
           lastTime: latest ? formatMessageTime(latest.created_at) : '',
           lastTimestamp: latest ? new Date(latest.created_at).getTime() : 0,
@@ -230,23 +265,49 @@ export function Chat({
     const merged = new Map<string, PrivateMessage>()
     for (const m of localMsgs) merged.set(m.id, m)
 
-    try {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .or(
-          `and(sender_id.eq.${currentSenderId},receiver_id.eq.${peerId}),and(sender_id.eq.${peerId},receiver_id.eq.${currentSenderId})`
-        )
-        .order('created_at', { ascending: true })
+    await hydrateSupabaseFromServerConfig()
+    let threadMessages: PrivateMessage[] | null = null
 
-      if (!error && data) {
-        for (const m of data as PrivateMessage[]) {
-          merged.set(m.id, m)
-          appendLocalThreadMessage(m)
+    if (hasDirectClientSupabase()) {
+      try {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('*')
+          .or(
+            `and(sender_id.eq.${currentSenderId},receiver_id.eq.${peerId}),and(sender_id.eq.${peerId},receiver_id.eq.${currentSenderId})`
+          )
+          .order('created_at', { ascending: true })
+
+        if (!error && data) {
+          threadMessages = data as PrivateMessage[]
         }
+      } catch {
+        // fall through to server proxy
       }
-    } catch {
-      // keep local messages
+    }
+
+    if (!threadMessages) {
+      try {
+        const res = await fetch(
+          `/api/messages?senderId=${encodeURIComponent(currentSenderId)}&peerId=${encodeURIComponent(peerId)}`
+        )
+        const json = (await res.json().catch(() => ({}))) as {
+          ok?: boolean
+          messages?: PrivateMessage[]
+        }
+        if (res.ok && json.ok && Array.isArray(json.messages)) {
+          threadMessages = json.messages
+        }
+      } catch {
+        // keep local messages
+      }
+    }
+
+    if (threadMessages) {
+      for (const m of threadMessages) {
+        merged.set(m.id, m)
+        appendLocalThreadMessage(m)
+      }
     }
 
     const sorted = Array.from(merged.values()).sort(
@@ -325,6 +386,7 @@ export function Chat({
             village: peerProfile.village || 'Mopani',
             municipality: peerProfile.municipality || 'Limpopo',
             whatsapp: peerProfile.whatsapp || '',
+            isVerified: isProfileIdentityVerified(peerProfile),
             lastMessage: preview,
             lastTime: timeLabel,
             lastTimestamp: msgTs,
@@ -372,9 +434,20 @@ export function Chat({
     }
     window.addEventListener('storage', handleStorage)
 
+    const pollTimer = !hasDirectClientSupabase()
+      ? window.setInterval(() => {
+          if (activeChatIdRef.current) {
+            void loadActiveThread(senderProfileId, activeChatIdRef.current)
+          }
+        }, 8000)
+      : null
+
     return () => {
       supabase.removeChannel(msgChannel)
       supabase.removeChannel(profileChannel)
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer)
+      }
       broadcastRef.current?.close()
       broadcastRef.current = null
       window.removeEventListener('storage', handleStorage)
@@ -384,15 +457,6 @@ export function Chat({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  const handleSwitchSenderProfile = (newSenderId: string) => {
-    setActiveProfileId(newSenderId)
-    setSenderProfileId(newSenderId)
-    setActiveChatId('')
-    setSelectedFile(null)
-    setShowSharedFiles(false)
-    buildConversations(newSenderId)
-  }
 
   const handleFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     setChatError('')
@@ -483,23 +547,55 @@ export function Chat({
         )
       )
 
-      const { data, error } = await supabase
-        .from('messages')
-        .insert([
-          {
-            id: optimisticId,
-            sender_id: senderProfileId,
-            receiver_id: activeChatId,
-            content: messageContent,
-          },
-        ])
-        .select()
-        .single()
+      let persisted: PrivateMessage | null = null
 
-      if (error) {
-        console.warn('Supabase message insert notice:', error.message)
-      } else if (data) {
-        const persisted = data as PrivateMessage
+      if (hasDirectClientSupabase()) {
+        const { data, error } = await supabase
+          .from('messages')
+          .insert([
+            {
+              id: optimisticId,
+              sender_id: senderProfileId,
+              receiver_id: activeChatId,
+              content: messageContent,
+            },
+          ])
+          .select()
+          .single()
+
+        if (!error && data) {
+          persisted = data as PrivateMessage
+        }
+      }
+
+      if (!persisted) {
+        try {
+          const res = await fetch('/api/messages/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: optimisticId,
+              sender_id: senderProfileId,
+              receiver_id: activeChatId,
+              content: messageContent,
+            }),
+          })
+          const json = (await res.json().catch(() => ({}))) as {
+            ok?: boolean
+            message?: PrivateMessage
+            error?: string
+          }
+          if (res.ok && json.ok && json.message) {
+            persisted = json.message
+          } else if (res.status === 403 && json.error) {
+            setChatError(json.error)
+          }
+        } catch {
+          // local message remains stored
+        }
+      }
+
+      if (persisted) {
         appendLocalThreadMessage(persisted)
         void fetch('/api/chat/notify', {
           method: 'POST',
@@ -511,6 +607,8 @@ export function Chat({
             content: messageContent,
           }),
         }).catch(() => {})
+      } else {
+        console.warn('Supabase message insert notice: persisted locally only')
       }
     } finally {
       setSending(false)
@@ -527,7 +625,7 @@ export function Chat({
           </div>
           <h2 className="text-2xl font-black text-gray-900">Create a Profile to Chat Privately</h2>
           <p className="text-sm text-gray-600 leading-relaxed">
-            Private 1-on-1 conversations and file sharing are scoped to your profile so nobody else can view your messages. Create one or more profiles to start chatting with other app users.
+            Private 1-on-1 conversations and file sharing are scoped to your profile so nobody else can view your messages. Create your profile to start chatting with other app users.
           </p>
           <button
             onClick={onGoRegister}
@@ -536,6 +634,44 @@ export function Chat({
             <UserPlus className="w-4 h-4" /> Create Your Profile
           </button>
         </div>
+      </div>
+    )
+  }
+
+  if (!isProfileEmailVerified(activeSenderProfile)) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-16">
+        <BackButton onClick={onBack} label="Back to Discover" />
+        <div className="bg-white rounded-3xl p-8 sm:p-12 shadow-xl border border-rose-100 text-center space-y-5">
+          <div className="w-16 h-16 bg-amber-100 text-amber-700 rounded-full flex items-center justify-center mx-auto">
+            <MailCheck className="w-8 h-8" />
+          </div>
+          <h2 className="text-2xl font-black text-gray-900">Verify Your Email to Chat</h2>
+          <p className="text-sm text-gray-600 leading-relaxed">
+            Before connecting with other members as <strong>{activeSenderProfile.full_name}</strong>, please verify your email address through Supabase Auth so everyone in Mopani Singles-v2 has authentic contact details.
+          </p>
+          <div className="flex flex-wrap justify-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setVerifyModalOpen(true)}
+              className="min-h-[44px] bg-rose-700 hover:bg-rose-800 text-white font-bold px-6 py-3 rounded-2xl shadow-md transition inline-flex items-center gap-2 text-sm"
+            >
+              <MailCheck className="w-4 h-4" /> Verify Email Now
+            </button>
+          </div>
+        </div>
+
+        <EmailVerificationModal
+          isOpen={verifyModalOpen}
+          profile={activeSenderProfile}
+          onClose={() => setVerifyModalOpen(false)}
+          onVerified={(updated) => {
+            setMyProfiles(getMyProfiles())
+            setSenderProfileId(updated.id)
+            setVerifyModalOpen(false)
+            void buildConversations(updated.id, initialChatId)
+          }}
+        />
       </div>
     )
   }
@@ -571,30 +707,22 @@ export function Chat({
               <p className="text-xs text-gray-500">Real-time chat & file sharing with app users</p>
             </div>
 
-            <div className="bg-rose-50/70 border border-rose-100 rounded-xl p-2.5">
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-rose-700">
+            <div className="bg-rose-50/70 border border-rose-100 rounded-xl p-2.5 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-rose-700">
                   Chatting As
-                </label>
-                <button
-                  type="button"
-                  onClick={onGoMyProfile}
-                  className="text-[10px] font-semibold text-rose-700 hover:underline"
-                >
-                  Manage Profiles ({myProfiles.length})
-                </button>
+                </p>
+                <p className="text-xs font-bold text-gray-900 truncate">
+                  {activeSenderProfile.full_name} ({activeSenderProfile.village})
+                </p>
               </div>
-              <select
-                value={senderProfileId}
-                onChange={(e) => handleSwitchSenderProfile(e.target.value)}
-                className="w-full bg-white border border-rose-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-rose-500"
+              <button
+                type="button"
+                onClick={onGoMyProfile}
+                className="text-[11px] font-semibold text-rose-700 hover:underline shrink-0"
               >
-                {myProfiles.map((mp) => (
-                  <option key={mp.id} value={mp.id}>
-                    {mp.full_name} ({mp.age}, {mp.village})
-                  </option>
-                ))}
-              </select>
+                My Profile
+              </button>
             </div>
 
             <div className="relative">
@@ -676,9 +804,14 @@ export function Chat({
                     textSizeClass="text-xs"
                   />
                   <div>
-                    <h3 className="text-sm font-bold text-gray-900">{activeConversation.profileName}</h3>
+                    <h3 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                      <span>{activeConversation.profileName}</span>
+                      {activeConversation.isVerified && (
+                        <BadgeCheck className="w-4 h-4 text-emerald-600 shrink-0" aria-label="Verified profile" />
+                      )}
+                    </h3>
                     <p className="text-[11px] text-rose-600 font-medium flex items-center gap-1">
-                      <Lock className="w-3 h-3" /> Private chat • {activeConversation.village}, {activeConversation.municipality}
+                      <Lock className="w-3 h-3" /> Private chat · {activeConversation.village}, {activeConversation.municipality}
                     </p>
                   </div>
                 </div>

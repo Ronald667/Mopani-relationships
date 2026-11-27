@@ -68,7 +68,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
                   : 'text-gray-600 hover:bg-rose-50 hover:text-rose-700'
               }`}
             >
-              <User className="w-4 h-4" /> My Profiles
+              <User className="w-4 h-4" /> My Profile
             </button>
 
             <button
@@ -122,7 +122,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
               onClick={() => setActiveTab('myprofile')}
               className="bg-rose-700 text-white text-xs font-bold px-3 py-2 rounded-xl shadow-xs"
             >
-              My Profiles
+              My Profile
             </button>
             <button
               onClick={() => setActiveTab('matches')}
@@ -171,7 +171,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
               activeTab === 'myprofile' ? 'bg-rose-700 text-white' : 'bg-gray-100 text-gray-700'
             }`}
           >
-            My Profiles
+            My Profile
           </button>
           <button
             onClick={() => setActiveTab('register')}

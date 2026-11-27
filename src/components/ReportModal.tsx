@@ -1,6 +1,10 @@
 import React, { useState } from 'react'
 import { AlertTriangle, X, Send } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import {
+  hasDirectClientSupabase,
+  hydrateSupabaseFromServerConfig,
+  supabase,
+} from '@/lib/supabase'
 
 interface ReportModalProps {
   isOpen: boolean
@@ -21,17 +25,37 @@ export function ReportModal({ isOpen, onClose, reportedId, reportedName }: Repor
 
     setSubmitting(true)
     try {
-      // Save report
-      const { error } = await supabase.from('reports').insert([
-        {
-          reported_id: reportedId,
-          reason: reason.trim(),
-        },
-      ])
+      await hydrateSupabaseFromServerConfig()
+      let saved = false
 
-      if (error) {
-        // Fallback local storage or print
-        console.warn('Supabase report insert error (using local fallback if needed):', error.message)
+      if (hasDirectClientSupabase()) {
+        const { error } = await supabase.from('reports').insert([
+          {
+            reported_id: reportedId,
+            reason: reason.trim(),
+          },
+        ])
+        saved = !error
+      }
+
+      if (!saved) {
+        try {
+          const res = await fetch('/api/reports', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              reported_id: reportedId,
+              reason: reason.trim(),
+            }),
+          })
+          const json = (await res.json().catch(() => ({}))) as { ok?: boolean }
+          saved = Boolean(res.ok && json.ok)
+        } catch {
+          saved = false
+        }
+      }
+
+      if (!saved) {
         const existingReports = JSON.parse(localStorage.getItem('mopani_reports') || '[]')
         existingReports.push({ reported_id: reportedId, reason, created_at: new Date().toISOString() })
         localStorage.setItem('mopani_reports', JSON.stringify(existingReports))

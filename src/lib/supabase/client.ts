@@ -41,9 +41,9 @@ function resolveValidSupabaseUrl(raw?: string): string {
   return DEFAULT_SUPABASE_URL
 }
 
-export let supabaseUrl = resolveValidSupabaseUrl(
-  getEnv(['VITE_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL'])
-)
+const rawConfiguredUrl = getEnv(['VITE_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']).trim()
+
+export let supabaseUrl = resolveValidSupabaseUrl(rawConfiguredUrl)
 
 let publicKey = getEnv([
   'VITE_SUPABASE_PUBLISHABLE_KEY',
@@ -51,6 +51,73 @@ let publicKey = getEnv([
   'VITE_SUPABASE_ANON_KEY',
   'NEXT_PUBLIC_SUPABASE_ANON_KEY',
 ]).trim()
+
+let serverReportedUrl = ''
+
+export type SupabaseKeyKind =
+  | 'missing'
+  | 'publishable'
+  | 'anon_jwt'
+  | 'secret_key_error'
+  | 'unknown'
+
+export function classifySupabaseKey(key: string): SupabaseKeyKind {
+  const trimmed = (key || '').trim()
+  if (!trimmed) return 'missing'
+  if (trimmed.startsWith('sb_secret_')) return 'secret_key_error'
+  if (trimmed.startsWith('sb_publishable_')) return 'publishable'
+  if (trimmed.startsWith('eyJ')) {
+    try {
+      const parts = trimmed.split('.')
+      if (parts.length === 3) {
+        const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+        const payload = JSON.parse(atob(base64)) as { role?: string }
+        if (payload.role === 'service_role') return 'secret_key_error'
+        if (payload.role === 'anon') return 'anon_jwt'
+      }
+    } catch {
+      // malformed JWT falls through to unknown
+    }
+    return 'unknown'
+  }
+  return 'unknown'
+}
+
+export function getSupabasePublicKey(): string {
+  return publicKey
+}
+
+export function getSupabaseConfigSnapshot(): {
+  url: string
+  rawConfiguredUrl: string
+  urlMalformed: boolean
+  hasKey: boolean
+  keyKind: SupabaseKeyKind
+} {
+  const effectiveRaw = serverReportedUrl || rawConfiguredUrl
+  let urlMalformed = false
+  if (effectiveRaw) {
+    if (effectiveRaw.startsWith('sb_') || effectiveRaw.startsWith('eyJ')) {
+      urlMalformed = true
+    } else {
+      try {
+        const parsed = new URL(
+          /^https?:\/\//i.test(effectiveRaw) ? effectiveRaw : `https://${effectiveRaw}`
+        )
+        urlMalformed = parsed.protocol !== 'https:' && parsed.protocol !== 'http:'
+      } catch {
+        urlMalformed = true
+      }
+    }
+  }
+  return {
+    url: supabaseUrl,
+    rawConfiguredUrl: effectiveRaw,
+    urlMalformed,
+    hasKey: Boolean(publicKey),
+    keyKind: classifySupabaseKey(publicKey),
+  }
+}
 
 function resolveValidStorageBucket(raw?: string): string {
   const val = (raw || '').trim()
@@ -72,10 +139,20 @@ export let SUPABASE_STORAGE_BUCKET = resolveValidStorageBucket(
   getEnv(['VITE_SUPABASE_STORAGE_BUCKET', 'NEXT_PUBLIC_SUPABASE_STORAGE_BUCKET'])
 )
 
-export let isSupabaseKeyConfigured = Boolean(publicKey)
+export let isSupabaseKeyConfigured = Boolean(
+  publicKey && classifySupabaseKey(publicKey) !== 'secret_key_error'
+)
+
+let serverProxyAvailable = false
+let hydrationPromise: Promise<void> | null = null
+
+export function isServerSupabaseProxyAvailable(): boolean {
+  return serverProxyAvailable
+}
 
 function buildClient(url: string, key: string): SupabaseClient | null {
   if (!url || !key) return null
+  if (classifySupabaseKey(key) === 'secret_key_error') return null
   try {
     return createClient(resolveValidSupabaseUrl(url), key, {
       realtime: {
@@ -91,33 +168,59 @@ function buildClient(url: string, key: string): SupabaseClient | null {
 
 let activeClient: SupabaseClient | null = buildClient(supabaseUrl, publicKey)
 
+export function hasDirectClientSupabase(): boolean {
+  return Boolean(activeClient)
+}
+
 export async function hydrateSupabaseFromServerConfig(): Promise<void> {
-  if (activeClient) return
+  if (hydrationPromise) return hydrationPromise
+
+  hydrationPromise = (async () => {
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 2000)
+      const res = await fetch('/api/supabase/config', { signal: controller.signal })
+      clearTimeout(timeout)
+      if (!res.ok) return
+      const cfg = (await res.json()) as {
+        url?: string
+        publishableKey?: string
+        storageBucket?: string
+        serverProxyAvailable?: boolean
+      }
+      if (typeof cfg.serverProxyAvailable === 'boolean') {
+        serverProxyAvailable = cfg.serverProxyAvailable
+      }
+      if (cfg.url) {
+        serverReportedUrl = cfg.url.trim()
+        supabaseUrl = resolveValidSupabaseUrl(cfg.url)
+      }
+      if (cfg.storageBucket) SUPABASE_STORAGE_BUCKET = resolveValidStorageBucket(cfg.storageBucket)
+      if (
+        !activeClient &&
+        cfg.publishableKey &&
+        classifySupabaseKey(cfg.publishableKey) !== 'secret_key_error'
+      ) {
+        publicKey = cfg.publishableKey.trim()
+        isSupabaseKeyConfigured = Boolean(publicKey)
+        activeClient = buildClient(supabaseUrl, publicKey)
+      }
+    } catch {
+      // Offline or no server config available; local/server fallback remains active
+    }
+  })()
+
   try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 1500)
-    const res = await fetch('/api/supabase/config', { signal: controller.signal })
-    clearTimeout(timeout)
-    if (!res.ok) return
-    const cfg = (await res.json()) as {
-      url?: string
-      publishableKey?: string
-      storageBucket?: string
+    await hydrationPromise
+  } finally {
+    if (!activeClient && !serverProxyAvailable) {
+      hydrationPromise = null
     }
-    if (cfg.url) supabaseUrl = resolveValidSupabaseUrl(cfg.url)
-    if (cfg.storageBucket) SUPABASE_STORAGE_BUCKET = resolveValidStorageBucket(cfg.storageBucket)
-    if (cfg.publishableKey) {
-      publicKey = cfg.publishableKey.trim()
-      isSupabaseKeyConfigured = Boolean(publicKey)
-      activeClient = buildClient(supabaseUrl, publicKey)
-    }
-  } catch {
-    // Offline or no server config available; local fallback remains active
   }
 }
 
 const UNCONFIGURED_ERROR = {
-  message: 'Supabase publishable key is not configured yet.',
+  message: 'Supabase publishable key is not configured for direct browser access.',
 }
 
 function createUnconfiguredChannel() {
@@ -180,7 +283,18 @@ export const supabase: SupabaseClient = new Proxy({} as SupabaseClient, {
 })
 
 export const testSupabaseConnection = async () => {
+  await hydrateSupabaseFromServerConfig()
   if (!activeClient) {
+    if (serverProxyAvailable) {
+      try {
+        const res = await fetch('/api/profiles')
+        if (res.ok) {
+          return { success: true, data: [] }
+        }
+      } catch {
+        // fall through
+      }
+    }
     return { success: false, error: UNCONFIGURED_ERROR.message }
   }
   try {

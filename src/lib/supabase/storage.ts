@@ -1,4 +1,6 @@
 import {
+  hasDirectClientSupabase,
+  hydrateSupabaseFromServerConfig,
   supabase,
   SUPABASE_PROFILES_BUCKET,
   SUPABASE_STORAGE_BUCKET,
@@ -66,6 +68,45 @@ export function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([buffer], { type: mime })
 }
 
+async function uploadProfilePhotoViaServer(
+  fileOrDataUrl: Blob | string,
+  profileId: string,
+  originalName: string
+): Promise<UploadedFileResult> {
+  const dataUrl =
+    typeof fileOrDataUrl === 'string' ? fileOrDataUrl : await blobToDataUrl(fileOrDataUrl)
+  const res = await fetch('/api/profiles/photo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profileId, dataUrl }),
+  })
+  const json = (await res.json().catch(() => ({}))) as {
+    ok?: boolean
+    url?: string
+    path?: string
+    fileName?: string
+    fileType?: string
+    fileSize?: number
+    error?: string
+  }
+  if (!res.ok || !json.ok || !json.url) {
+    throw new Error(json.error || `Server photo upload failed (HTTP ${res.status})`)
+  }
+  return {
+    url: json.url,
+    path: json.path || '',
+    fileName: json.fileName || originalName,
+    fileType: json.fileType || 'image/jpeg',
+    fileSize:
+      typeof json.fileSize === 'number'
+        ? json.fileSize
+        : typeof fileOrDataUrl === 'string'
+        ? dataUrl.length
+        : fileOrDataUrl.size,
+    storedInSupabase: true,
+  }
+}
+
 async function uploadBlobToBucket(
   bucketName: string,
   storagePath: string,
@@ -74,8 +115,42 @@ async function uploadBlobToBucket(
   upsert = false
 ): Promise<UploadedFileResult> {
   const contentType = file.type || 'application/octet-stream'
+  const profileIdFromPath = storagePath.split('/')[0] || 'profile'
+
+  await hydrateSupabaseFromServerConfig()
+
+  if (!hasDirectClientSupabase() && bucketName === SUPABASE_PROFILES_BUCKET) {
+    try {
+      return await uploadProfilePhotoViaServer(file, profileIdFromPath, originalName)
+    } catch (serverErr: unknown) {
+      let fallbackUrl = ''
+      if (file.size <= 2 * 1024 * 1024) {
+        try {
+          fallbackUrl = await blobToDataUrl(file)
+        } catch {
+          fallbackUrl = ''
+        }
+      }
+      return {
+        url: fallbackUrl,
+        path: '',
+        fileName: originalName,
+        fileType: contentType,
+        fileSize: file.size,
+        storedInSupabase: false,
+        error:
+          serverErr instanceof Error
+            ? serverErr.message
+            : 'Could not upload profile photo to Supabase Storage',
+      }
+    }
+  }
 
   try {
+    if (!hasDirectClientSupabase()) {
+      throw new Error('Supabase browser storage client is not configured')
+    }
+
     let { data, error } = await supabase.storage
       .from(bucketName)
       .upload(storagePath, file, {
@@ -118,6 +193,14 @@ async function uploadBlobToBucket(
       storedInSupabase: true,
     }
   } catch (err: any) {
+    if (bucketName === SUPABASE_PROFILES_BUCKET) {
+      try {
+        return await uploadProfilePhotoViaServer(file, profileIdFromPath, originalName)
+      } catch {
+        // fall back to local data URL below
+      }
+    }
+
     let fallbackUrl = ''
     if (file.size <= 2 * 1024 * 1024) {
       try {
