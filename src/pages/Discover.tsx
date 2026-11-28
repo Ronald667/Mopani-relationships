@@ -39,14 +39,9 @@ import {
   Route as RouteIcon,
   Zap,
 } from 'lucide-react'
+import { MOPANI_VILLAGES } from '@/data/mopaniLocations'
 
-const VILLAGES: Record<string, string[]> = {
-  "Maruleng": ["Lorraine", "Sekororo", "Trichardtsdal", "The Oaks", "Hoedspruit", "Makhutsi"],
-  "Greater Tzaneen": ["Tzaneen", "Lenyenye", "Letsitele", "Maake", "Nkowankowa"],
-  "Greater Letaba": ["Modjadjiskloof", "Ga-Kgapane", "Mokwakwaila"],
-  "Ba-Phalaborwa": ["Phalaborwa", "Namakgale", "Lulekani", "Gravalotte"],
-  "Greater Giyani": ["Giyani", "Dzumeri", "Nkomo"]
-}
+const VILLAGES = MOPANI_VILLAGES
 
 export function Discover({
   onGoRegister,

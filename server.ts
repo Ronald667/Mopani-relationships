@@ -244,14 +244,13 @@ async function getStoredAdminHash(): Promise<string | null> {
 async function saveStoredAdminHash(hash: string): Promise<void> {
   claimedAdminHashMemory = hash
   if (!adminSupabase) return
-  try {
-    await adminSupabase
-      .from('app_settings')
-      .upsert([{ key: 'admin_passcode_hash', value: hash, updated_at: new Date().toISOString() }], {
-        onConflict: 'key',
-      })
-  } catch {
-    // keep in-memory hash if app_settings doesn't exist yet
+  const { error } = await adminSupabase
+    .from('app_settings')
+    .upsert([{ key: 'admin_passcode_hash', value: hash, updated_at: new Date().toISOString() }], {
+      onConflict: 'key',
+    })
+  if (error) {
+    console.warn('[admin] Unable to persist admin_passcode_hash to app_settings:', error.message)
   }
 }
 
@@ -1697,6 +1696,16 @@ async function startServer() {
       return
     }
 
+    const storedHash = await getStoredAdminHash()
+    if (storedHash) {
+      if (!passcode || !verifyScryptHash(passcode, storedHash)) {
+        res.status(401).json({ ok: false, error: 'Invalid admin password.' })
+        return
+      }
+      res.json({ ok: true, token: issueAdminBearerToken(ADMIN_EMAIL), adminEmail: ADMIN_EMAIL })
+      return
+    }
+
     if (ADMIN_PASSCODE) {
       if (!passcode || !verifyPlainSecret(passcode, ADMIN_PASSCODE)) {
         res.status(401).json({ ok: false, error: 'Invalid admin password.' })
@@ -1706,17 +1715,26 @@ async function startServer() {
       return
     }
 
-    const storedHash = await getStoredAdminHash()
-    if (!storedHash) {
-      res.status(400).json({ ok: false, error: 'Admin password has not been claimed yet.' })
-      return
+    res.status(400).json({ ok: false, error: 'Admin password has not been claimed yet.' })
+  })
+
+  app.post('/api/admin/auth/change-password', async (req: Request, res: Response) => {
+    const adminEmail = requireAdminAuth(req, res)
+    if (!adminEmail) return
+
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      newPassword?: unknown
     }
-    if (!passcode || !verifyScryptHash(passcode, storedHash)) {
-      res.status(401).json({ ok: false, error: 'Invalid admin password.' })
+    const newPassword = typeof body.newPassword === 'string' ? body.newPassword.trim() : ''
+
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      res.status(400).json({ ok: false, error: 'Admin password must be between 8 and 128 characters.' })
       return
     }
 
-    res.json({ ok: true, token: issueAdminBearerToken(ADMIN_EMAIL), adminEmail: ADMIN_EMAIL })
+    const hash = hashAdminPasscode(newPassword)
+    await saveStoredAdminHash(hash)
+    res.json({ ok: true, message: 'Admin password updated.' })
   })
 
   app.get('/api/admin/profiles', async (req: Request, res: Response) => {

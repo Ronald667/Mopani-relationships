@@ -32,14 +32,9 @@ import {
   UserPlus,
   KeyRound,
 } from 'lucide-react'
+import { MOPANI_VILLAGES } from '@/data/mopaniLocations'
 
-const VILLAGES: Record<string, string[]> = {
-  Maruleng: ['Lorraine', 'Sekororo', 'Trichardtsdal', 'The Oaks', 'Hoedspruit', 'Makhutsi'],
-  'Greater Tzaneen': ['Tzaneen', 'Lenyenye', 'Letsitele', 'Maake', 'Nkowankowa'],
-  'Greater Letaba': ['Modjadjiskloof', 'Ga-Kgapane', 'Mokwakwaila'],
-  'Ba-Phalaborwa': ['Phalaborwa', 'Namakgale', 'Lulekani', 'Gravalotte'],
-  'Greater Giyani': ['Giyani', 'Dzumeri', 'Nkomo'],
-}
+const VILLAGES = MOPANI_VILLAGES
 
 const PENDING_DRAFT_KEY = 'mopani_pending_registration_draft'
 

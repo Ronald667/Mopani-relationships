@@ -27,14 +27,9 @@ import {
   Lock,
   Compass,
 } from 'lucide-react'
+import { MOPANI_VILLAGES } from '@/data/mopaniLocations'
 
-const VILLAGES: Record<string, string[]> = {
-  "Maruleng": ["Lorraine", "Sekororo", "Trichardtsdal", "The Oaks", "Hoedspruit", "Makhutsi"],
-  "Greater Tzaneen": ["Tzaneen", "Lenyenye", "Letsitele", "Maake", "Nkowankowa"],
-  "Greater Letaba": ["Modjadjiskloof", "Ga-Kgapane", "Mokwakwaila"],
-  "Ba-Phalaborwa": ["Phalaborwa", "Namakgale", "Lulekani", "Gravalotte"],
-  "Greater Giyani": ["Giyani", "Dzumeri", "Nkomo"]
-}
+const VILLAGES = MOPANI_VILLAGES
 
 export function Matches({
   onStartChat,
@@ -49,6 +44,7 @@ export function Matches({
   const [preferences, setPreferences] = useState(() => ({
     intention: activeProfile?.intention || 'Marriage',
     municipality: activeProfile?.municipality || 'Greater Tzaneen',
+    village: activeProfile?.village || '',
     language: activeProfile?.language || 'Sepedi',
     age: activeProfile?.age || 27,
   }))
@@ -174,11 +170,27 @@ export function Matches({
             <label className="block text-[11px] text-rose-200 mb-1">Preferred Municipality</label>
             <select
               value={preferences.municipality}
-              onChange={(e) => setPreferences({ ...preferences, municipality: e.target.value })}
+              onChange={(e) =>
+                setPreferences({ ...preferences, municipality: e.target.value, village: '' })
+              }
               className="w-full bg-white/20 border border-white/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
             >
               {Object.keys(VILLAGES).map((m) => (
                 <option key={m} value={m} className="text-gray-900">{m}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[11px] text-rose-200 mb-1">Preferred Village / Town</label>
+            <select
+              value={preferences.village}
+              onChange={(e) => setPreferences({ ...preferences, village: e.target.value })}
+              className="w-full bg-white/20 border border-white/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+            >
+              <option value="" className="text-gray-900">Any Village / Town</option>
+              {VILLAGES[preferences.municipality]?.map((v) => (
+                <option key={v} value={v} className="text-gray-900">{v}</option>
               ))}
             </select>
           </div>

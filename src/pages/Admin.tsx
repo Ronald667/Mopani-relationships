@@ -26,6 +26,7 @@ import {
   CalendarDays,
   Plus,
   Trash2,
+  KeyRound,
 } from 'lucide-react'
 import type { LocalEvent } from '@/components/LocalEventsSection'
 
@@ -81,6 +82,11 @@ export function Admin({ onBack }: { onBack: () => void }) {
   const [rejectionNotes, setRejectionNotes] = useState<Record<string, string>>({})
   const [processingId, setProcessingId] = useState<string>('')
   const [lightboxImage, setLightboxImage] = useState<{ url: string; name: string } | null>(null)
+  const [showChangePassword, setShowChangePassword] = useState(false)
+  const [newAdminPassword, setNewAdminPassword] = useState('')
+  const [confirmNewAdminPassword, setConfirmNewAdminPassword] = useState('')
+  const [changePasswordError, setChangePasswordError] = useState('')
+  const [savingNewPassword, setSavingNewPassword] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -320,6 +326,42 @@ export function Admin({ onBack }: { onBack: () => void }) {
       setAdminToken(loginJson.token)
     } finally {
       setAuthSubmitting(false)
+    }
+  }
+
+  const handleChangeAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setChangePasswordError('')
+    const trimmed = newAdminPassword.trim()
+    if (trimmed.length < 8) {
+      setChangePasswordError('New admin password must be at least 8 characters.')
+      return
+    }
+    if (trimmed !== confirmNewAdminPassword.trim()) {
+      setChangePasswordError('Passwords do not match.')
+      return
+    }
+    setSavingNewPassword(true)
+    try {
+      const res = await fetch('/api/admin/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${adminToken}`,
+        },
+        body: JSON.stringify({ newPassword: trimmed }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+      if (!res.ok || !json.ok) {
+        setChangePasswordError(json.error || 'Could not update admin password.')
+        return
+      }
+      setNewAdminPassword('')
+      setConfirmNewAdminPassword('')
+      setShowChangePassword(false)
+      setStatusMessage('Admin password updated successfully. Use it next time you sign in.')
+    } finally {
+      setSavingNewPassword(false)
     }
   }
 
@@ -612,6 +654,19 @@ export function Admin({ onBack }: { onBack: () => void }) {
                   ? 'Claim Admin Password & Enter'
                   : 'Sign In to Admin'}
               </button>
+
+              {!setupRequired && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginMode('otp')
+                    setAuthError('')
+                  }}
+                  className="w-full text-center text-xs font-semibold text-rose-700 hover:underline pt-1"
+                >
+                  Forgot password? Sign in with Email OTP to change it
+                </button>
+              )}
             </form>
           ) : !otpSent ? (
             <form onSubmit={handleSendAdminOtp} className="space-y-3.5">
@@ -678,8 +733,20 @@ export function Admin({ onBack }: { onBack: () => void }) {
             </span>
             <span aria-hidden="true">·</span>
             <button
+              type="button"
+              onClick={() => {
+                setShowChangePassword((prev) => !prev)
+                setChangePasswordError('')
+              }}
+              className="text-rose-700 hover:text-rose-800 font-semibold underline inline-flex items-center gap-1"
+            >
+              <KeyRound className="w-3 h-3" /> Change Password
+            </button>
+            <span aria-hidden="true">·</span>
+            <button
               onClick={() => {
                 setAdminToken('')
+                setShowChangePassword(false)
               }}
               className="text-gray-500 hover:text-red-600 underline"
             >
@@ -762,6 +829,68 @@ export function Admin({ onBack }: { onBack: () => void }) {
           </button>
         </div>
       </div>
+
+      {showChangePassword && (
+        <form
+          onSubmit={handleChangeAdminPassword}
+          className="mb-6 bg-white border border-rose-200 rounded-2xl p-5 shadow-sm max-w-xl space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-black text-gray-900 flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-rose-600" /> Update Admin Password
+            </h2>
+            <button
+              type="button"
+              onClick={() => setShowChangePassword(false)}
+              className="text-xs font-semibold text-gray-500 hover:text-gray-800"
+            >
+              Cancel
+            </button>
+          </div>
+          {changePasswordError && (
+            <div className="bg-red-50 border border-red-200 text-red-700 text-xs font-semibold px-3 py-2 rounded-xl">
+              {changePasswordError}
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">
+                New Password (min 8 chars)
+              </label>
+              <input
+                required
+                type="password"
+                minLength={8}
+                placeholder="Enter new password"
+                value={newAdminPassword}
+                onChange={(e) => setNewAdminPassword(e.target.value)}
+                className="w-full min-h-[42px] border border-gray-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">
+                Confirm New Password
+              </label>
+              <input
+                required
+                type="password"
+                minLength={8}
+                placeholder="Repeat new password"
+                value={confirmNewAdminPassword}
+                onChange={(e) => setConfirmNewAdminPassword(e.target.value)}
+                className="w-full min-h-[42px] border border-gray-300 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-rose-500 focus:outline-none"
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            disabled={savingNewPassword}
+            className="min-h-[40px] bg-rose-700 hover:bg-rose-800 disabled:opacity-60 text-white font-bold px-5 py-2 rounded-xl text-xs transition"
+          >
+            {savingNewPassword ? 'Saving...' : 'Save New Password'}
+          </button>
+        </form>
+      )}
 
       {showDiagnostics && (
         <div className="mb-6">

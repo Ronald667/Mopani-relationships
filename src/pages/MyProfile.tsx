@@ -44,14 +44,9 @@ import {
   Coins,
   KeyRound,
 } from 'lucide-react'
+import { MOPANI_VILLAGES } from '@/data/mopaniLocations'
 
-const VILLAGES: Record<string, string[]> = {
-  "Maruleng": ["Lorraine", "Sekororo", "Trichardtsdal", "The Oaks", "Hoedspruit", "Makhutsi"],
-  "Greater Tzaneen": ["Tzaneen", "Lenyenye", "Letsitele", "Maake", "Nkowankowa"],
-  "Greater Letaba": ["Modjadjiskloof", "Ga-Kgapane", "Mokwakwaila"],
-  "Ba-Phalaborwa": ["Phalaborwa", "Namakgale", "Lulekani", "Gravalotte"],
-  "Greater Giyani": ["Giyani", "Dzumeri", "Nkomo"]
-}
+const VILLAGES = MOPANI_VILLAGES
 
 export function MyProfile({
   onGoRegister,
@@ -696,6 +691,10 @@ export function MyProfile({
                     onChange={(e) => setFormData({ ...formData, village: e.target.value })}
                     className="w-full border rounded-xl p-2.5 text-sm bg-white"
                   >
+                    {formData.village &&
+                      !(VILLAGES[formData.municipality] || []).includes(formData.village) && (
+                        <option value={formData.village}>{formData.village}</option>
+                      )}
                     {VILLAGES[formData.municipality]?.map((v) => (
                       <option key={v} value={v}>{v}</option>
                     ))}
